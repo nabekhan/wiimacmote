@@ -5,7 +5,7 @@ Connect and use your Nintendo Wiimote on your Mac!
 ## Installation
 
 1. **Download the app:**
-   [Download WiiMacMote.dmg](https://github.com/gdemontalivet/wiimacmote/raw/main/WiiMacMote.dmg)
+   [Download WiiMacMote.dmg](https://github.com/gdemontalivet/wiimacmote/releases/download/v1.0.0/WiiMacMote.dmg)
 
 2. **Install:**
    - Open the downloaded `WiiMacMote.dmg` file.
