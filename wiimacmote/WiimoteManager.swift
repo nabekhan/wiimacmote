@@ -1,713 +1,553 @@
-//
-//  WiimoteManager.swift
-//  wiimacmote
-//
-//  Handles Wiimote discovery, connection, pairing, and HID input.
-//
-//  Uses IOBluetoothDeviceInquiry for continuous discovery.
-//  Uses IOBluetoothDevicePair (Private API) for Secure Pairing.
-//  Uses IOHIDManager (CoreHID) for Input.
-//
-
-import Foundation
-import IOKit
-import IOKit.hid
-import IOBluetooth
+import AppKit
 import Combine
+import CoreBluetooth
+import Foundation
+import IOBluetooth
 
-// MARK: - Diagnostic Log
-
-class DiagnosticLog: ObservableObject {
-    struct Entry: Identifiable {
+final class DiagnosticLog: ObservableObject {
+    struct Entry: Identifiable, Equatable {
         let id = UUID()
         let time: Date
         let icon: String
         let message: String
     }
 
-    @Published var entries: [Entry] = []
+    @Published private(set) var entries: [Entry] = []
 
-    func log(_ icon: String, _ message: String) {
-        let entry = Entry(time: Date(), icon: icon, message: message)
-        DispatchQueue.main.async {
-            self.entries.append(entry)
-            if self.entries.count > 200 {
-                self.entries.removeFirst(self.entries.count - 200)
+    func append(_ icon: String, _ message: String) {
+        let work = { [weak self] in
+            guard let self else { return }
+            self.entries.append(Entry(time: Date(), icon: icon, message: message))
+            if self.entries.count > 500 {
+                self.entries.removeFirst(self.entries.count - 500)
             }
+        }
+
+        if Thread.isMainThread {
+            work()
+        } else {
+            DispatchQueue.main.async(execute: work)
         }
         print("\(icon) \(message)")
     }
 
     func clear() {
-        DispatchQueue.main.async { self.entries.removeAll() }
-    }
-}
-
-// MARK: - Discovered Device
-
-struct DiscoveredDevice: Identifiable, Equatable, Hashable {
-    let id: String          // address
-    let address: String
-    let name: String
-    let isWiimote: Bool
-
-    var displayName: String {
-        if name.isEmpty { return address } else { return name }
-    }
-}
-
-// MARK: - Connection State
-
-enum WiimoteState: Equatable {
-    case idle
-    case scanning
-    case devicesFound
-    case pairing(String)          // address
-    case paired(String)           // address
-    case connecting
-    case connected
-    case error(String)
-
-    var description: String {
-        switch self {
-        case .idle:                 return "Ready"
-        case .scanning:            return "Scanning (Press 1+2 or SYNC)..."
-        case .devicesFound:        return "Device Found"
-        case .pairing:             return "Pairing (PIN Exchange)..."
-        case .paired:              return "Paired ✅"
-        case .connecting:          return "Waiting for HID..."
-        case .connected:           return "Connected ✅"
-        case .error(let msg):      return "Error: \(msg)"
+        if Thread.isMainThread {
+            entries.removeAll()
+        } else {
+            DispatchQueue.main.async { [weak self] in self?.entries.removeAll() }
         }
     }
 
-    var isWorking: Bool {
+    var plainText: String {
+        let formatter = ISO8601DateFormatter()
+        return entries
+            .map { "\(formatter.string(from: $0.time)) \($0.icon) \($0.message)" }
+            .joined(separator: "\n")
+    }
+}
+
+enum WiimoteAppPhase: Equatable {
+    case starting
+    case idle
+    case scanning
+    case pairing(name: String, attempt: Int)
+    case waitingForHID(name: String)
+    case connected(count: Int)
+    case bluetoothOff
+    case permissionDenied
+    case error(String)
+
+    var title: String {
         switch self {
-        case .scanning, .pairing, .connecting: return true
+        case .starting: return "Starting Bluetooth services…"
+        case .idle: return "Ready"
+        case .scanning: return "Scanning for a Wii Remote…"
+        case .pairing(let name, let attempt): return "Pairing \(name) · attempt \(attempt)"
+        case .waitingForHID(let name): return "Waiting for \(name) to expose HID…"
+        case .connected(let count): return "\(count) Wii Remote\(count == 1 ? "" : "s") connected"
+        case .bluetoothOff: return "Bluetooth is turned off"
+        case .permissionDenied: return "Bluetooth permission is denied"
+        case .error(let message): return message
+        }
+    }
+
+    var isBusy: Bool {
+        switch self {
+        case .starting, .scanning, .pairing, .waitingForHID: return true
         default: return false
         }
     }
 }
 
-// MARK: - Wiimote Button Bits
+final class WiimoteManager: NSObject, ObservableObject {
+    @Published private(set) var phase: WiimoteAppPhase = .starting
+    @Published private(set) var isScanning = false
+    @Published private(set) var wiimotes: [ConnectedWiimoteSnapshot] = []
 
-private struct WiimoteButtons {
-    static let dpadLeft:  UInt16 = 0x0001
-    static let dpadRight: UInt16 = 0x0002
-    static let dpadDown:  UInt16 = 0x0004
-    static let dpadUp:    UInt16 = 0x0008
-    static let plus:      UInt16 = 0x0010
-    static let two:       UInt16 = 0x0100
-    static let one:       UInt16 = 0x0200
-    static let b:         UInt16 = 0x0400
-    static let a:         UInt16 = 0x0800
-    static let minus:     UInt16 = 0x1000
-    static let home:      UInt16 = 0x8000
-}
-
-// MARK: - WiimoteManager
-
-class WiimoteManager: NSObject, ObservableObject {
-
-    // MARK: Published
-
-    @Published var state: WiimoteState = .idle
-    @Published var discoveredDevices: [DiscoveredDevice] = []
-    
-    struct ConnectedWiimote: Identifiable {
-        let id = UUID()
-        let device: IOHIDDevice
-        let playerIndex: Int
-        var gamepad: VirtualGamepad?
-        var batteryLevel: Int = -1
-        var pressedButtons: Set<String> = []
-        var gamepadActive: Bool { gamepad != nil }
+    @Published var automaticScanning: Bool {
+        didSet {
+            defaults.set(automaticScanning, forKey: Keys.automaticScanning)
+            if automaticScanning {
+                startScanning()
+            } else {
+                stopScanning()
+            }
+        }
     }
-    @Published var connectedWiimotes: [ConnectedWiimote] = []
-    
-    let log = DiagnosticLog()
 
-    // MARK: Private — Bluetooth
+    @Published var virtualGamepadEnabled: Bool {
+        didSet {
+            defaults.set(virtualGamepadEnabled, forKey: Keys.virtualGamepadEnabled)
+            applyHIDSettings()
+        }
+    }
 
-    private var inquiry: IOBluetoothDeviceInquiry?
-    private var pairingAgent: IOBluetoothDevicePair?
+    @Published var controllerProfile: ControllerProfile {
+        didSet {
+            defaults.set(controllerProfile.rawValue, forKey: Keys.controllerProfile)
+            applyHIDSettings()
+        }
+    }
+
+    @Published var motionRightStickEnabled: Bool {
+        didSet {
+            defaults.set(motionRightStickEnabled, forKey: Keys.motionRightStickEnabled)
+            applyHIDSettings()
+        }
+    }
+
+    let diagnostics = DiagnosticLog()
+
+    private enum Keys {
+        static let automaticScanning = "automaticScanning"
+        static let virtualGamepadEnabled = "virtualGamepadEnabled"
+        static let controllerProfile = "controllerProfile"
+        static let motionRightStickEnabled = "motionRightStickEnabled"
+    }
+
+    private let defaults: UserDefaults
+    private lazy var hidController = WiimoteHIDController(settings: currentHIDSettings)
     private var centralManager: CBCentralManager?
+    private var inquiry: IOBluetoothDeviceInquiry?
+    private var pairingBridge: WMPairingBridge?
+    private var activePairingToken: UUID?
+    private var pairingAttempts: [String: Int] = [:]
+    private var pairingCooldowns: [String: Date] = [:]
+    private var connectionCooldowns: [String: Date] = [:]
+    private var retryWorkItem: DispatchWorkItem?
+    private var hidWaitWorkItem: DispatchWorkItem?
+    private var hasStarted = false
 
-    // MARK: Private — HID
-
-    private var hidManager: IOHIDManager?
-    
-    private var logCancellable: AnyCancellable?
-    
-    // We keep track of devices we are currently pairing to avoid duplicate attempts
-    private var currentlyPairingAddress: String?
-
-    // Focused device for aggressive connection
-    private var targetDevice: IOBluetoothDevice?
-    private var connectionRetryTimer: Timer?
-
-    // MARK: - Init
-
-    override init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.automaticScanning = defaults.object(forKey: Keys.automaticScanning) as? Bool ?? true
+        self.virtualGamepadEnabled = defaults.object(forKey: Keys.virtualGamepadEnabled) as? Bool ?? false
+        self.motionRightStickEnabled = defaults.object(forKey: Keys.motionRightStickEnabled) as? Bool ?? false
+        self.controllerProfile = ControllerProfile(
+            rawValue: defaults.string(forKey: Keys.controllerProfile) ?? ""
+        ) ?? .sideways
         super.init()
-        logCancellable = log.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
-        
-        // Initialize CBCentralManager to establish XPC connection for Pairing Coordinator
-        centralManager = CBCentralManager(delegate: nil, queue: nil)
-        
-        setupHIDManager()
+        configureHIDCallbacks()
     }
-    
+
     deinit {
-        stopInquiry()
-        if let manager = hidManager {
-            IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
-        }
+        cancelPairingWork()
+        inquiry?.stop()
+        centralManager?.delegate = nil
+        hidController.stop()
     }
 
-    // MARK: - Device Identification
+    func start() {
+        guard !hasStarted else { return }
+        hasStarted = true
 
-    private func isWiimoteName(_ name: String) -> Bool {
-        let n = name.lowercased()
-        return n.contains("nintendo rvl-cnt-01") || n.contains("nintendo rvl-wbc") || n == "wiimote"
+        hidController.start()
+        diagnostics.append("🚀", "WiiMacMote 2 initialized.")
+
+        centralManager = CBCentralManager(
+            delegate: self,
+            queue: .main,
+            options: [CBCentralManagerOptionShowPowerAlertKey: false]
+        )
     }
-
-    // MARK: - Public: Scan
 
     func startScanning() {
-        if state == .scanning && inquiry != nil { return }
-        
-        log.log("🔍", "Starting Continuous Bluetooth Inquiry...")
-        state = .scanning
-        startInquiry()
-    }
-    
-    private func startInquiry() {
-        if inquiry == nil {
+        guard hasStarted else {
+            start()
+            return
+        }
+        guard centralManager?.state == .poweredOn else { return }
+        guard pairingBridge == nil, activePairingToken == nil else { return }
+        guard retryWorkItem == nil, hidWaitWorkItem == nil else { return }
+        guard wiimotes.count < 4 else { return }
+        guard !isScanning else { return }
+
+        let inquiry: IOBluetoothDeviceInquiry
+        if let existing = self.inquiry {
+            inquiry = existing
+        } else {
             inquiry = IOBluetoothDeviceInquiry(delegate: self)
-            // kIOBluetoothDeviceSearchClassic = 0. We want classic bluetooth.
-            // Using 0 implicitly or checking documentation. kIOBluetoothDeviceSearchClassic is defined in headers.
-            // In Swift, we can access it via IOBluetoothDeviceInquiry constants if available, or just rely on default.
-            // The WiimotePair code sets: _deviceInquiry.searchType = kIOBluetoothDeviceSearchClassic;
-            // Let's check if we can set it.
-            // IOBluetoothDeviceInquiry doesn't expose searchType property in Swift easily sometimes, but `setSearchCriteria` exists.
-            // Actually `init(delegate:)` defaults to Classic.
+            inquiry.searchType = kIOBluetoothDeviceSearchClassic.rawValue
+            inquiry.updateNewDeviceNames = true
+            self.inquiry = inquiry
         }
-        
-        inquiry?.start()
-    }
-    
-    private func stopInquiry() {
-        inquiry?.stop()
-        inquiry = nil
-        state = .idle
-        log.log("🛑", "Scanning stopped")
-    }
 
-    // MARK: - Pairing Logic
-
-    private func pairDevice(_ device: IOBluetoothDevice) {
-        let address = device.addressString ?? "Unknown"
-        
-        // Set as target for aggressive retry
-        targetDevice = device
-        
-        if currentlyPairingAddress == address {
-            log.log("⚠️", "Already pairing with \(address)")
+        inquiry.clearFoundDevices()
+        let result = inquiry.start()
+        guard result == kIOReturnSuccess else {
+            phase = .error("Bluetooth scan could not start (\(hex(result))).")
+            diagnostics.append("❌", "Classic Bluetooth inquiry failed to start: \(hex(result)).")
             return
         }
-        
-        log.log("🔗", "Found Wiimote: \(device.name ?? "Unknown") (\(address)). Stopping inquiry to pair.")
-        
-        // Stop inquiry to focus on pairing
-        inquiry?.stop()
-        
-        if device.isPaired() {
-             log.log("ℹ️", "Device is already paired. Attempting to connect...")
-             // Even if paired, we might need to open connection if it's not connected.
-             if !device.isConnected() {
-                 device.openConnection()
-             }
-             // We also want to ensure HID manager picks it up.
-             // If connection fails, we might want to unpair and re-pair?
-             // For now, let's treat it as a pairing attempt to ensure we have a fresh connection.
-             // Actually, WiimotePair skips paired devices. But if user presses SYNC, they probably want to re-pair.
+
+        isScanning = true
+        if wiimotes.isEmpty {
+            phase = .scanning
         }
-        
-        currentlyPairingAddress = address
-        state = .pairing(address)
-        
-        performSecurePairing(device: device)
+        diagnostics.append("🔍", "Classic Bluetooth inquiry started. Press the red SYNC button.")
     }
 
-    func performSecurePairing(device: IOBluetoothDevice) {
-        let address = device.addressString ?? "Unknown"
-        log.log("🔐", "Initializing IOBluetoothDevicePair for \(address)...")
-        
-        pairingAgent = IOBluetoothDevicePair(device: device)
-        
-        guard let agent = pairingAgent else {
-            log.log("❌", "Failed to allocate IOBluetoothDevicePair")
-            state = .error("Agent alloc failed")
-            currentlyPairingAddress = nil
-            retryConnection()
-            return
-        }
-        
-        agent.delegate = self
-        
-        log.log("🔧", "Setting UserDefinedPincode = true")
-        agent.setUserDefinedPincode(true)
-        
-        log.log("▶️", "Starting Pairing Agent...")
-        let result = agent.start()
-        
-        if result != kIOReturnSuccess {
-            let err = String(cString: mach_error_string(result))
-            log.log("❌", "Failed to start pairing. Error code: \(result) (\(err))")
-            state = .error("Pairing start failed: \(err)")
-            currentlyPairingAddress = nil
-            retryConnection()
-        } else {
-            log.log("⏳", "Pairing agent started. Waiting for PIN request...")
+    func stopScanning() {
+        inquiry?.stop()
+        isScanning = false
+        if wiimotes.isEmpty, pairingBridge == nil {
+            phase = .idle
         }
     }
-    
-    private func retryConnection() {
-        if state == .connected { return }
-        
-        if let target = targetDevice {
-             log.log("🔄", "Retrying connection to \(target.name ?? "Target") in 3s...")
-             state = .pairing(target.addressString ?? "") // Keep showing pairing state
-             
-             connectionRetryTimer?.invalidate()
-             connectionRetryTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-                 self?.performSecurePairing(device: target)
-             }
-        } else {
-             resumeScanning()
-        }
-    }
-    
-    private func resumeScanning() {
-        if state != .connected {
-             log.log("🔄", "Resuming scanning...")
-             state = .scanning
-             inquiry?.start()
-        }
-    }
-    
-    func resetTarget() {
-        targetDevice = nil
-        connectionRetryTimer?.invalidate()
-        pairingAgent?.stop()
-        pairingAgent = nil
-        currentlyPairingAddress = nil
+
+    func retryNow() {
+        cancelPairingWork()
+        pairingCooldowns.removeAll()
+        connectionCooldowns.removeAll()
+        pairingAttempts.removeAll()
         startScanning()
     }
 
-    // MARK: - Bluetooth Reset
-    
-    func killBluetoothd() {
-        log.log("⚠️", "Attempting to restart bluetoothd...")
-        let script = "do shell script \"pkill bluetoothd\" with administrator privileges"
-        let appleScript = NSAppleScript(source: script)
-        var errorDict: NSDictionary?
-        appleScript?.executeAndReturnError(&errorDict)
-        if let err = errorDict {
-            log.log("❌", "Failed to kill bluetoothd: \(err)")
+    func setRumble(id: UInt64, enabled: Bool) {
+        hidController.setRumble(id: id, enabled: enabled)
+    }
+
+    func requestStatus(id: UInt64) {
+        hidController.requestStatus(id: id)
+    }
+
+    func calibrateMotion(id: UInt64) {
+        hidController.calibrateMotion(id: id)
+    }
+
+    func openBluetoothSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Bluetooth") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func openBluetoothPrivacySettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private var currentHIDSettings: WiimoteHIDSettings {
+        WiimoteHIDSettings(
+            virtualGamepadEnabled: virtualGamepadEnabled,
+            profile: controllerProfile,
+            motionRightStickEnabled: motionRightStickEnabled
+        )
+    }
+
+    private func applyHIDSettings() {
+        guard hasStarted else { return }
+        hidController.updateSettings(currentHIDSettings)
+    }
+
+    private func configureHIDCallbacks() {
+        hidController.logHandler = { [weak self] icon, message in
+            self?.diagnostics.append(icon, message)
+        }
+        hidController.onSnapshotsChanged = { [weak self] snapshots in
+            self?.wiimotes = snapshots
+        }
+        hidController.onConnectionCountChanged = { [weak self] count in
+            self?.handleConnectionCountChanged(count)
+        }
+    }
+
+    private func handleConnectionCountChanged(_ count: Int) {
+        if count > 0 {
+            phase = .connected(count: count)
+            cancelPairingWork()
+
+            if automaticScanning, count < 4 {
+                resumeScanning(after: 1.0)
+            }
+        } else if automaticScanning {
+            phase = .scanning
+            resumeScanning(after: 0.5)
         } else {
-            log.log("✅", "bluetoothd restart requested.")
-            // It might take a moment for Bluetooth to come back.
-            // We should probably stop scanning and wait a bit.
-            stop()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-                self?.startScanning()
+            phase = .idle
+        }
+    }
+
+    private func isSupportedWiimoteName(_ name: String) -> Bool {
+        let normalized = name.uppercased()
+        return normalized.contains("NINTENDO RVL-CNT-01") || normalized == "WIIMOTE"
+    }
+
+    private func handleDiscoveredDevice(_ device: IOBluetoothDevice) {
+        guard let name = device.name, isSupportedWiimoteName(name) else { return }
+
+        let address = device.addressString ?? name
+        diagnostics.append("👀", "Found \(name) at \(address).")
+
+        if device.isPaired() {
+            let now = Date()
+            if let cooldown = connectionCooldowns[address], cooldown > now {
+                return
             }
-        }
-    }
-
-    // MARK: - Public: Stop / Disconnect
-
-    func stop() {
-        stopInquiry()
-        pairingAgent?.stop()
-        
-        // If we have connected devices, keep the state as connected instead of idle
-        if !connectedWiimotes.isEmpty {
-            state = .connected
-        }
-    }
-
-    func disconnectAll() {
-        for wiimote in connectedWiimotes {
-            IOHIDDeviceClose(wiimote.device, IOOptionBits(kIOHIDOptionsTypeNone))
-            wiimote.gamepad?.reset()
-        }
-        DispatchQueue.main.async {
-            self.connectedWiimotes.removeAll()
-            self.state = .idle
-            self.log.log("🔌", "All disconnected")
-        }
-    }
-    
-    func disconnect(playerIndex: Int) {
-        guard let index = connectedWiimotes.firstIndex(where: { $0.playerIndex == playerIndex }) else { return }
-        let wiimote = connectedWiimotes[index]
-        IOHIDDeviceClose(wiimote.device, IOOptionBits(kIOHIDOptionsTypeNone))
-        wiimote.gamepad?.reset()
-        
-        DispatchQueue.main.async {
-            self.connectedWiimotes.remove(at: index)
-            if self.connectedWiimotes.isEmpty {
-                self.state = .idle
-            }
-            self.log.log("🔌", "Disconnected P\(playerIndex)")
-        }
-    }
-
-    // MARK: - IOHIDManager Logic
-
-    private func setupHIDManager() {
-        hidManager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
-        guard let manager = hidManager else { return }
-
-        let vid = 0x057E
-        let pid1 = 0x0306
-        let pid2 = 0x0330
-        let matchingDict1 = [kIOHIDVendorIDKey: vid, kIOHIDProductIDKey: pid1] as CFDictionary
-        let matchingDict2 = [kIOHIDVendorIDKey: vid, kIOHIDProductIDKey: pid2] as CFDictionary
-
-        IOHIDManagerSetDeviceMatchingMultiple(manager, [matchingDict1, matchingDict2] as CFArray)
-
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        IOHIDManagerRegisterDeviceMatchingCallback(manager, { ctx, res, sender, dev in
-            guard let ctx = ctx else { return }
-            Unmanaged<WiimoteManager>.fromOpaque(ctx).takeUnretainedValue().deviceMatched(dev)
-        }, context)
-        
-        IOHIDManagerRegisterDeviceRemovalCallback(manager, { ctx, res, sender, dev in
-            guard let ctx = ctx else { return }
-            Unmanaged<WiimoteManager>.fromOpaque(ctx).takeUnretainedValue().deviceRemoved(dev)
-        }, context)
-
-        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
-        IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
-        log.log("👀", "HID Manager Ready")
-    }
-
-    private func deviceMatched(_ device: IOHIDDevice) {
-        log.log("✅", "HID Device Matched!")
-        if connectedWiimotes.contains(where: { $0.device === device }) { return }
-        if connectedWiimotes.count >= 4 { 
-            log.log("⚠️", "Max 4 Wiimotes already connected.")
-            return 
-        }
-
-        let result = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
-        if result != kIOReturnSuccess {
-            log.log("❌", "Failed to open HID: \(String(format: "0x%08x", result))")
-            return
-        }
-        
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        let reportCallback: IOHIDReportCallback = { ctx, res, sender, type, rId, report, len in
-            guard let ctx = ctx else { return }
-            guard let sender = sender else { return }
-            let device = Unmanaged<IOHIDDevice>.fromOpaque(sender).takeUnretainedValue()
-            let data = Data(bytes: report, count: len)
-            Unmanaged<WiimoteManager>.fromOpaque(ctx).takeUnretainedValue().handleReport(device: device, data: data)
-        }
-        
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
-        IOHIDDeviceRegisterInputReportCallback(device, buffer, 64, reportCallback, context)
-        onConnected(device: device)
-    }
-
-    private func deviceRemoved(_ device: IOHIDDevice) {
-        if let index = connectedWiimotes.firstIndex(where: { $0.device === device }) {
-            let playerIndex = connectedWiimotes[index].playerIndex
-            log.log("🔌", "HID Device Removed P\(playerIndex)")
-            disconnect(playerIndex: playerIndex)
-            if connectedWiimotes.isEmpty {
-                startScanning()
-            }
-        }
-    }
-
-    private func onConnected(device: IOHIDDevice) {
-        // Find first available slot (1-4)
-        var availableSlot = 1
-        for i in 1...4 {
-            if !connectedWiimotes.contains(where: { $0.playerIndex == i }) {
-                availableSlot = i
-                break
-            }
-        }
-        
-        DispatchQueue.main.async {
-            if let gp = VirtualGamepad() {
-                let newWiimote = ConnectedWiimote(device: device, playerIndex: availableSlot, gamepad: gp)
-                self.connectedWiimotes.append(newWiimote)
-                self.log.log("🎮", "Virtual Gamepad Active for P\(availableSlot)")
-            } else {
-                let newWiimote = ConnectedWiimote(device: device, playerIndex: availableSlot, gamepad: nil)
-                self.connectedWiimotes.append(newWiimote)
-            }
-            self.state = .connected
-            
-            // Send initial reports right after appending to ensure device knows its LED
-            self.setReportMode(device: device)
-            self.requestStatus(device: device)
-            self.setLEDs(device: device, mask: self.getLEDMask(for: availableSlot))
-        }
-        
-        // Ensure pairing agent is cleaned up
-        currentlyPairingAddress = nil
-        pairingAgent = nil
-        
-        // We can keep scanning if we want to allow more to pair! 
-        // Let's resume scanning after 1 second if we have < 4 Wiimotes.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            if let self = self, self.connectedWiimotes.count < 4 {
-                self.resumeScanning()
-            }
-        }
-    }
-
-    private func sendReport(device: IOHIDDevice, data: [UInt8]) {
-        guard data.count >= 2 else { return }
-        
-        // IOHIDDeviceSetReport expects the report ID to be the FIRST byte in the buffer for Bluetooth HID.
-        // It DOES NOT add the report ID itself for Bluetooth devices.
-        // We drop 0xA2 because 0xA2 is just the Bluetooth output report identifier for classic Bluetooth,
-        // which the macOS Bluetooth HID driver handles internally.
-        // What remains is the Wiimote Report ID (e.g., 0x11) followed by the payload.
-        let payload = Array(data.dropFirst()) 
-        let reportID = CFIndex(payload[0]) // e.g. 0x11
-        
-        let result = payload.withUnsafeBytes { ptr -> IOReturn in
-            IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, reportID, ptr.baseAddress!, ptr.count)
-        }
-        
-        if result != kIOReturnSuccess {
-            log.log("❌", "sendReport failed: \(String(format: "0x%08x", result))")
-        }
-    }
-
-    private func setReportMode(device: IOHIDDevice) { sendReport(device: device, data: [0xA2, 0x12, 0x04, 0x30]) }
-    private func requestStatus(device: IOHIDDevice) { sendReport(device: device, data: [0xA2, 0x15, 0x00]) }
-    
-    private func getLEDMask(for playerIndex: Int) -> UInt8 {
-        switch playerIndex {
-        case 1: return 0x10 // LED 1
-        case 2: return 0x20 // LED 2
-        case 3: return 0x40 // LED 3
-        case 4: return 0x80 // LED 4
-        default: return 0x10
-        }
-    }
-    
-    func setLEDs(device: IOHIDDevice, mask: UInt8) { sendReport(device: device, data: [0xA2, 0x11, mask]) }
-    
-    func setRumble(playerIndex: Int, on: Bool) { 
-        guard let wiimote = connectedWiimotes.first(where: { $0.playerIndex == playerIndex }) else { return }
-        let mask = getLEDMask(for: playerIndex)
-        // Rumble is Bit 0 (0x01)
-        sendReport(device: wiimote.device, data: [0xA2, 0x11, on ? (mask | 0x01) : mask]) 
-    }
-
-    private func handleReport(device: IOHIDDevice, data: Data) {
-        guard data.count > 0 else { return }
-        switch data[0] {
-        case 0x30, 0x31:
-            guard data.count >= 3 else { return }
-            handleButtons(device: device, raw: UInt16(data[1]) | (UInt16(data[2]) << 8))
-        case 0x20:
-            guard data.count >= 7 else { return }
-            let pct = Int((Float(data[6]) / 200.0) * 100.0)
-            DispatchQueue.main.async {
-                if let index = self.connectedWiimotes.firstIndex(where: { $0.device === device }) {
-                    self.connectedWiimotes[index].batteryLevel = pct
-                    let pIndex = self.connectedWiimotes[index].playerIndex
-                    self.setLEDs(device: device, mask: self.getLEDMask(for: pIndex))
+            connectionCooldowns[address] = now.addingTimeInterval(5)
+            inquiry?.stop()
+            isScanning = false
+            diagnostics.append("ℹ️", "The remote is already paired; requesting a HID connection.")
+            if !device.isConnected() {
+                let result = device.openConnection()
+                if result != kIOReturnSuccess {
+                    diagnostics.append("⚠️", "Open connection returned \(hex(result)).")
                 }
             }
-        default: break
+            phase = .waitingForHID(name: name)
+            scheduleHIDWaitTimeout(name: name)
+            return
+        }
+
+        if let cooldown = pairingCooldowns[address], cooldown > Date() {
+            return
+        }
+        guard pairingBridge == nil else { return }
+        beginPairing(device: device, name: name, address: address)
+    }
+
+    private func beginPairing(
+        device: IOBluetoothDevice,
+        name: String,
+        address: String
+    ) {
+        inquiry?.stop()
+        isScanning = false
+        retryWorkItem?.cancel()
+        retryWorkItem = nil
+
+        let attempt = (pairingAttempts[address] ?? 0) + 1
+        pairingAttempts[address] = attempt
+        phase = .pairing(name: name, attempt: attempt)
+        diagnostics.append("🔐", "Starting binary-PIN pairing attempt \(attempt) for \(address).")
+
+        let token = UUID()
+        activePairingToken = token
+        let bridge = WMPairingBridge(
+            device: device,
+            logHandler: { [weak self] message in
+                self?.diagnostics.append("🔑", message)
+            },
+            completion: { [weak self] result, detail in
+                self?.finishPairing(
+                    token: token,
+                    device: device,
+                    name: name,
+                    address: address,
+                    result: result,
+                    detail: detail
+                )
+            }
+        )
+        pairingBridge = bridge
+
+        let startResult = bridge.start()
+        if startResult != kIOReturnSuccess {
+            finishPairing(
+                token: token,
+                device: device,
+                name: name,
+                address: address,
+                result: startResult,
+                detail: nil
+            )
         }
     }
 
-    private func handleButtons(device: IOHIDDevice, raw: UInt16) {
-        var x: Int8 = 0; var y: Int8 = 0
-        
-        let left = (raw & WiimoteButtons.dpadLeft != 0)
-        let right = (raw & WiimoteButtons.dpadRight != 0)
-        let up = (raw & WiimoteButtons.dpadUp != 0)
-        let down = (raw & WiimoteButtons.dpadDown != 0)
-        
-        if left { x = -127 }
-        if right { x = 127 }
-        if up { y = -127 }
-        if down { y = 127 }
+    private func finishPairing(
+        token: UUID,
+        device: IOBluetoothDevice,
+        name: String,
+        address: String,
+        result: IOReturn,
+        detail: String?
+    ) {
+        guard activePairingToken == token else { return }
+        activePairingToken = nil
+        pairingBridge?.cancel()
+        pairingBridge = nil
 
-        var mask: UInt16 = 0
-        if raw & WiimoteButtons.a != 0 { mask |= VirtualGamepad.Button.a.mask }
-        if raw & WiimoteButtons.b != 0 { mask |= VirtualGamepad.Button.b.mask }
-        if raw & WiimoteButtons.one != 0 { mask |= VirtualGamepad.Button.x.mask }
-        if raw & WiimoteButtons.two != 0 { mask |= VirtualGamepad.Button.y.mask }
-        if raw & WiimoteButtons.plus != 0 { mask |= VirtualGamepad.Button.plus.mask }
-        if raw & WiimoteButtons.minus != 0 { mask |= VirtualGamepad.Button.minus.mask }
-        if raw & WiimoteButtons.home != 0 { mask |= VirtualGamepad.Button.home.mask }
+        if result == kIOReturnSuccess {
+            retryWorkItem?.cancel()
+            retryWorkItem = nil
+            pairingAttempts[address] = nil
+            pairingCooldowns[address] = nil
+            phase = .waitingForHID(name: name)
+            diagnostics.append("✅", "Pairing succeeded; waiting for the HID service.")
 
-        DispatchQueue.main.async {
-            if let index = self.connectedWiimotes.firstIndex(where: { $0.device === device }) {
-                self.connectedWiimotes[index].gamepad?.update(xAxis: x, yAxis: y, dpad: (up, down, left, right), buttons: mask)
-                
-                var s = Set<String>()
-                if raw & WiimoteButtons.a != 0 { s.insert("A") }
-                if raw & WiimoteButtons.b != 0 { s.insert("B") }
-                if raw & WiimoteButtons.one != 0 { s.insert("1") }
-                if raw & WiimoteButtons.two != 0 { s.insert("2") }
-                if raw & WiimoteButtons.plus != 0 { s.insert("+") }
-                if raw & WiimoteButtons.minus != 0 { s.insert("-") }
-                if raw & WiimoteButtons.home != 0 { s.insert("⌂") }
-                if raw & WiimoteButtons.dpadLeft != 0 { s.insert("←") }
-                if raw & WiimoteButtons.dpadRight != 0 { s.insert("→") }
-                if raw & WiimoteButtons.dpadUp != 0 { s.insert("↑") }
-                if raw & WiimoteButtons.dpadDown != 0 { s.insert("↓") }
-                
-                self.connectedWiimotes[index].pressedButtons = s
+            if !device.isConnected() {
+                let openResult = device.openConnection()
+                if openResult != kIOReturnSuccess {
+                    diagnostics.append("⚠️", "Post-pair connection returned \(hex(openResult)).")
+                }
             }
+            scheduleHIDWaitTimeout(name: name)
+            return
+        }
+
+        let attempt = pairingAttempts[address] ?? 1
+        let explanation = detail?.isEmpty == false ? detail! : hex(result)
+        diagnostics.append("❌", "Pairing attempt \(attempt) failed: \(explanation).")
+
+        if attempt < 2 {
+            pairingCooldowns[address] = Date().addingTimeInterval(2)
+            phase = .error("Pairing failed once; one bounded retry is scheduled.")
+
+            let retry = DispatchWorkItem { [weak self, weak device] in
+                guard let self, let device else { return }
+                self.retryWorkItem = nil
+                guard self.centralManager?.state == .poweredOn else { return }
+                self.beginPairing(device: device, name: name, address: address)
+            }
+            retryWorkItem = retry
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: retry)
+        } else {
+            // Avoid the old infinite loop: two failures trigger a long cooldown
+            // and return to discovery instead of hammering the pairing daemon.
+            retryWorkItem = nil
+            pairingAttempts[address] = nil
+            pairingCooldowns[address] = Date().addingTimeInterval(30)
+            phase = .error("Pairing failed twice. Press SYNC and use Retry when ready.")
+            resumeScanning(after: 3)
+        }
+    }
+
+    private func cancelPairingWork() {
+        retryWorkItem?.cancel()
+        retryWorkItem = nil
+        hidWaitWorkItem?.cancel()
+        hidWaitWorkItem = nil
+        pairingBridge?.cancel()
+        pairingBridge = nil
+        activePairingToken = nil
+    }
+
+    private func scheduleHIDWaitTimeout(name: String) {
+        hidWaitWorkItem?.cancel()
+        let countBefore = wiimotes.count
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.hidWaitWorkItem = nil
+            guard self.wiimotes.count == countBefore else { return }
+            self.phase = .error("\(name) paired, but its HID connection did not appear.")
+            self.diagnostics.append(
+                "⚠️",
+                "Pairing completed without a HID match. Press SYNC again or remove the stale Bluetooth pairing."
+            )
+            self.resumeScanning(after: 1)
+        }
+        hidWaitWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: work)
+    }
+
+    private func resumeScanning(after delay: TimeInterval) {
+        guard automaticScanning else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.startScanning()
+        }
+    }
+
+    private func hex(_ value: IOReturn) -> String {
+        String(format: "0x%08X", UInt32(bitPattern: value))
+    }
+}
+
+// MARK: - CoreBluetooth permission/power gate
+
+extension WiimoteManager: CBCentralManagerDelegate {
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        switch central.state {
+        case .poweredOn:
+            diagnostics.append("✅", "Bluetooth is powered on and permission is available.")
+            if automaticScanning {
+                startScanning()
+            } else {
+                phase = wiimotes.isEmpty ? .idle : .connected(count: wiimotes.count)
+            }
+
+        case .poweredOff:
+            stopScanning()
+            cancelPairingWork()
+            phase = .bluetoothOff
+            diagnostics.append("⚠️", "Bluetooth is turned off.")
+
+        case .unauthorized:
+            stopScanning()
+            cancelPairingWork()
+            phase = .permissionDenied
+            diagnostics.append("❌", "Bluetooth permission was denied in Privacy & Security.")
+
+        case .unsupported:
+            stopScanning()
+            cancelPairingWork()
+            phase = .error("This Mac does not expose a supported Bluetooth controller.")
+
+        case .resetting:
+            stopScanning()
+            cancelPairingWork()
+            phase = .starting
+            diagnostics.append("ℹ️", "Bluetooth is resetting; scanning will resume automatically.")
+
+        case .unknown:
+            phase = .starting
+
+        @unknown default:
+            phase = .error("Bluetooth entered an unknown state.")
         }
     }
 }
 
-// MARK: - IOBluetoothDeviceInquiryDelegate
+// MARK: - Classic Bluetooth inquiry
 
 extension WiimoteManager: IOBluetoothDeviceInquiryDelegate {
-    
     func deviceInquiryStarted(_ sender: IOBluetoothDeviceInquiry!) {
-        log.log("🔎", "Inquiry Started...")
+        isScanning = true
     }
-    
-    func deviceInquiryDeviceFound(_ sender: IOBluetoothDeviceInquiry!, device: IOBluetoothDevice!) {
-        guard let device = device, let name = device.name else { return }
-        log.log("👀", "Discovered: \(name) (\(device.addressString ?? "?"))")
-        
-        if isWiimoteName(name) {
-            pairDevice(device)
-        }
+
+    func deviceInquiryDeviceFound(
+        _ sender: IOBluetoothDeviceInquiry!,
+        device: IOBluetoothDevice!
+    ) {
+        guard let device else { return }
+        handleDiscoveredDevice(device)
     }
-    
-    func deviceInquiryComplete(_ sender: IOBluetoothDeviceInquiry!, error: IOReturn, aborted: Bool) {
-        log.log("🏁", "Inquiry Complete. Aborted: \(aborted), Error: \(error)")
-        
-        // Continuous scanning: Restart if not aborted and no error
-        if !aborted && error == kIOReturnSuccess && state == .scanning {
-             // Avoid tight loop if something is wrong
-             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                 guard let self = self else { return }
-                 if self.state == .scanning {
-                     self.log.log("🔄", "Restarting Inquiry...")
-                     self.inquiry?.start()
-                 }
-             }
+
+    func deviceInquiryComplete(
+        _ sender: IOBluetoothDeviceInquiry!,
+        error: IOReturn,
+        aborted: Bool
+    ) {
+        isScanning = false
+
+        if error != kIOReturnSuccess, !aborted {
+            diagnostics.append("⚠️", "Bluetooth inquiry completed with \(hex(error)).")
         }
+
+        guard !aborted, automaticScanning, pairingBridge == nil, wiimotes.count < 4 else {
+            return
+        }
+        sender.clearFoundDevices()
+        resumeScanning(after: 1)
     }
 }
-
-// MARK: - IOBluetoothDevicePairDelegate
-
-extension WiimoteManager: IOBluetoothDevicePairDelegate {
-    
-    func devicePairingPINCodeRequest(_ sender: Any!) {
-        log.log("⚡️", "Delegate: devicePairingPINCodeRequest called")
-        
-        guard let pair = sender as? IOBluetoothDevicePair else {
-            log.log("❌", "Sender is not IOBluetoothDevicePair")
-            return
-        }
-        guard let device = pair.device() else {
-            log.log("❌", "Pairing agent has no device")
-            return
-        }
-        
-        log.log("🔑", "Calculating PIN for Host Address...")
-        
-        guard let hostController = IOBluetoothHostController.default() else {
-            log.log("❌", "IOBluetoothHostController.default() returned nil")
-            return
-        }
-        
-        guard let hostAddressStr = hostController.addressAsString() else {
-            log.log("❌", "Host address string is nil")
-            return
-        }
-        
-        log.log("ℹ️", "Host Address: \(hostAddressStr)")
-        
-        var hostAddr = BluetoothDeviceAddress()
-        IOBluetoothNSStringToDeviceAddress(hostAddressStr, &hostAddr)
-        
-        // Reverse address for PIN
-        let d = hostAddr.data
-        let bytes: [UInt8] = [d.5, d.4, d.3, d.2, d.1, d.0]
-        let hexString = bytes.map { String(format: "%02X", $0) }.joined(separator: ":")
-        log.log("ℹ️", "Calculated PIN Bytes: \(hexString)")
-        
-        // Pad to 8 bytes for UInt64
-        let paddedBytes = bytes + [0, 0]
-        var val: UInt64 = 0
-        Data(paddedBytes).withUnsafeBytes { val = $0.load(as: UInt64.self) }
-        
-        log.log("ℹ️", "PIN as UInt64: \(val)")
-        
-        guard let coordinator = IOBluetoothCoreBluetoothCoordinator.sharedInstance() else {
-            log.log("❌", "IOBluetoothCoreBluetoothCoordinator.sharedInstance() returned nil")
-            return
-        }
-        
-        guard let peer = device.classicPeer() else {
-            log.log("❌", "device.classicPeer() returned nil")
-            return
-        }
-        
-        let type = pair.currentPairingType()
-        log.log("ℹ️", "Pairing Type: \(type)")
-        
-        log.log("📤", "Calling pairPeer on Coordinator...")
-        coordinator.pairPeer(peer, forType: type, withKey: NSNumber(value: val))
-        log.log("✅", "PIN Sent.")
-    }
-    
-    func devicePairingFinished(_ sender: Any!, error: IOReturn) {
-        currentlyPairingAddress = nil
-        
-        if error == kIOReturnSuccess {
-            log.log("✅", "Pairing Successful! Waiting for HID connection...")
-            state = .paired(pairingAgent?.device()?.addressString ?? "")
-            // Inquiry was stopped before pairing.
-            // Do NOT restart inquiry immediately, wait for HID connection.
-            // But if HID doesn't connect, maybe we should?
-            // Usually if paired successfully, the device should connect via HID automatically or we might need to initiate connection.
-            // HID Manager device match should happen soon.
-            
-            // Explicitly try to open connection if it doesn't happen?
-            if let device = pairingAgent?.device(), !device.isConnected() {
-                 log.log("🔌", "Initiating connection to newly paired device...")
-                 device.openConnection()
-            }
-            
-        } else {
-            let err = String(cString: mach_error_string(error))
-            log.log("❌", "Pairing Failed: Error \(error) (\(err))")
-            state = .error("Pairing Failed")
-            
-            // Retry on failure
-            retryConnection()
-        }
-    }
-}
-

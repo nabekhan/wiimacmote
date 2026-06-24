@@ -1,40 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Workspace
-   version = "1.0">
-   <FileRef
-      location = "self:">
-   </FileRef>
-   <FileRef
-      location = "group:fix-xcode-project.sh">
-   </FileRef>
-   <FileRef
-      location = "group:cleanup-and-fix.sh">
-   </FileRef>
-   <FileRef
-      location = "group:QUICK-FIX.sh">
-   </FileRef>
-   <FileRef
-      location = "group:VirtualGamepad-SIMPLE.swift">
-   </FileRef>
-   <FileRef
-      location = "group:FIX-EVERYTHING.sh">
-   </FileRef>
-   <FileRef
-      location = "group:HOW-TO-FIX-BUILD.md">
-   </FileRef>
-   <FileRef
-      location = "group:wiimacmote-Bridging-Header.h">
-   </FileRef>
-   <FileRef
-      location = "group:RUN-THIS-NOW.sh">
-   </FileRef>
-   <FileRef
-      location = "group:START-HERE.md">
-   </FileRef>
-   <FileRef
-      location = "group:wiimacmote.entitlements">
-   </FileRef>
-   <FileRef
-      location = "group:COMPLETE-FIX-GUIDE.md">
-   </FileRef>
+<Workspace version="1.0">
+   <FileRef location="self:"></FileRef>
 </Workspace>
