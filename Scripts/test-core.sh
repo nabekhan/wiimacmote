@@ -20,6 +20,8 @@ fi
 $SWIFTC \
   "$ROOT/wiimacmote/WiimoteProtocol.swift" \
   "$ROOT/wiimacmote/GamepadMapping.swift" \
+  "$ROOT/wiimacmote/VirtualGamepadReports.swift" \
+  "$ROOT/wiimacmote/DeveloperLabEnvironment.swift" \
   "$ROOT/Tests/CoreTests.swift" \
   -o "$BUILD_DIR/CoreTests"
 

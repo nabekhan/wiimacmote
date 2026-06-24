@@ -1,83 +1,95 @@
-# WiiMacMote 2.0
+# WiiMacMote 2.0.5
 
-A modernized macOS utility for discovering, pairing, reading, and translating Nintendo Wii Remote input.
+WiiMacMote discovers, pairs, reads, and translates Nintendo Wii Remote input on modern macOS. The physical-controller path remains useful on its own; virtual gamepad publication is an optional developer experiment.
 
-## What changed
+## Highlights
 
-- Dedicated serial queues for physical HID input and virtual HID output.
-- Bounded pairing retries with cooldowns instead of a failure loop.
-- Runtime-checked isolation of the private macOS binary-PIN pairing calls.
-- Correct parsing for status, buttons, accelerometer reports, acknowledgements, and extension payloads.
-- Up to four simultaneous Wii Remotes with player LEDs, battery estimates, rumble, status refresh, and live report-rate diagnostics.
-- Sideways and upright controller profiles.
-- Optional accelerometer-to-right-stick mapping with live centering.
-- Experimental generic virtual HID gamepad output, without impersonating Xbox hardware.
-- A conventional Xcode project that opens on Xcode 15 and newer and produces Apple silicon/Intel release builds.
-- Pure Swift protocol and mapping tests that run without Bluetooth hardware.
-
-## Important platform limits
-
-Wii Remote pairing on current macOS still needs private `IOBluetooth` selectors because the legacy PIN is six binary bytes, not a normal text PIN. Those selectors are contained in `WiimotePairingBridge.m` and checked before use so an incompatible future macOS release fails visibly rather than crashing.
-
-macOS also has no generally available supported API for publishing a system-wide virtual game controller. `IOHIDUserDevice` can describe a generic HID gamepad, but current macOS releases normally gate virtual-device creation behind Apple’s restricted `com.apple.developer.hid.virtual.device` entitlement, and software using Apple's Game Controller framework may still ignore virtual devices. That entitlement is deliberately **not** claimed by the default target. The toggle is therefore labelled **experimental** and fails visibly when unavailable. Physical Wii Remote input, diagnostics, LEDs, battery status, rumble, and motion reading do not depend on virtual output.
+- Original `RVL-CNT-01` and MotionPlus-inside `RVL-CNT-01-TR` matching.
+- Bounded red-SYNC pairing with the Wii Remote's six-byte binary PIN.
+- Dedicated serial queues for Bluetooth HID input and virtual output.
+- Up to four remotes with player LEDs, battery estimate, rumble, status refresh, report-rate diagnostics, buttons, and accelerometer data.
+- Sideways and upright mappings, plus optional filtered tilt-to-right-stick input.
+- Three virtual output identities and two publication backends.
+- A normal Standard scheme and an isolated Local AMFI Lab path that builds unsigned, applies an explicit ad-hoc entitlement signature, and launches from Terminal for diagnostics.
+- Portable Swift tests for protocol parsing, mapping, descriptors, and report encoders.
 
 ## Requirements
 
-- macOS 14 Sonoma or newer.
-- Xcode 15 or newer. Xcode 26.5 is the current stable toolchain as of June 2026.
-- A Mac with Bluetooth.
-- An original `Nintendo RVL-CNT-01` or `Nintendo RVL-CNT-01-TR` Wii Remote. Compatible clones may work but are not guaranteed.
+- macOS 14 Sonoma or newer for physical Wii Remote support.
+- Xcode 16 or newer to build this 2.0.5 project (Xcode 26 is recommended for current macOS).
+- macOS 15 or newer when selecting the CoreHID backend.
+- A Mac with Bluetooth and a Wii Remote.
 
-## Build and run
+## Build the normal app
 
 1. Open `WiiMacMote.xcodeproj`.
 2. Select the **WiiMacMote** scheme and **My Mac**.
-3. Choose a signing team in **Signing & Capabilities** if Xcode requests one.
-4. Build and run.
-5. Approve the Bluetooth permission prompt.
-6. Press the red **SYNC** button behind the Wii Remote battery cover.
+3. Build and run.
+4. Grant Bluetooth access and press the red **SYNC** button behind the Wii Remote battery cover.
 
-The physical-controller path does **not** require Input Monitoring or Accessibility permission. The app is intentionally not sandboxed because it communicates with Classic Bluetooth and private legacy-pairing selectors. Experimental virtual HID output may require a separately approved Apple entitlement on current macOS releases.
+The Standard scheme deliberately omits `com.apple.developer.hid.virtual.device`. Buttons, motion, LEDs, battery, rumble, and diagnostics still work; virtual device creation may fail cleanly.
 
-For command-line verification:
+Command-line checks:
 
 ```sh
-./Scripts/test-core.sh
 ./Scripts/verify-source.sh
 ./Scripts/build.sh
 ```
 
+## Local AMFI Lab virtual output
+
+For a Mac whose owner has already deliberately relaxed SIP and AMFI for development, run:
+
+```sh
+./Scripts/run-developer-lab.sh -- \
+  --enable-virtual-gamepad \
+  --profile xbox-series \
+  --backend iohid
+```
+
+The script builds without any Apple team or provisioning profile, explicitly applies an ad-hoc signature containing `com.apple.developer.hid.virtual.device`, verifies it, prints SIP/boot-argument diagnostics, and launches `WiiMacMote.app/Contents/MacOS/WiiMacMote` directly so launch failures remain visible in Terminal. Run without the arguments first when you want to verify physical Wii Remote input before virtual output is enabled.
+
+The Developer Lab configuration also disables Hardened Runtime for the lab build only, uses a separate bundle identifier, and defines `DEVELOPER_LAB` so the app displays runtime entitlement and AMFI-hint status. It does **not** borrow WaveBird's approved signature and does **not** modify SIP, AMFI, NVRAM, or Startup Security.
+
+Detailed commands, failure meanings, and restoration guidance are in `DEVELOPER_LAB.md`. The Standard app remains usable on normally secured Macs without the restricted entitlement.
+
+## Virtual identities
+
+| Identity | When to try it | Current limitation |
+|---|---|---|
+| Generic HID Gamepad | Honest raw-HID testing and descriptor debugging | Game Controller clients may ignore an unknown virtual gamepad |
+| Xbox Wireless Controller (Series) | Best first choice for broad game, Steam/SDL, and Game Controller compatibility | It is compatibility metadata, not a real Bluetooth Xbox controller; recognition is not guaranteed |
+| Switch Pro Controller (simple mode) | Nintendo-like layout and a closer conceptual match to a Wii Remote | Only report `0x3F` is emitted; the full Nintendo subcommand handshake, motion, and HD rumble are not implemented |
+
+A single Joy-Con is physically the closest modern controller to a Wii Remote, but impersonating one is not the best default for games: a lone Joy-Con has a partial control set, orientation-specific mappings, and more protocol state. Switch Pro is the more practical Nintendo identity; Xbox is the compatibility-first identity.
+
+The Xbox profile uses the current Bluetooth Series VID/PID (`045E:0B13`), a native 17-byte input report, and a vendor GIP companion stream. It was chosen over an unverified Model 1708 dump because its descriptor/report behavior is documented by a current open-source macOS implementation. The app never promises 100% compatibility: Apple states that Game Controller contains checks that may ignore virtual HID devices.
+
+## Publication backends
+
+- **Automatic**: tries `IOHIDUserDevice` first, then CoreHID where available.
+- **IOHIDUserDevice**: works with the macOS 14 deployment target and is the compatibility baseline.
+- **CoreHID**: uses `HIDVirtualDevice` on macOS 15 or newer.
+
+Both backends are governed by the same restricted-entitlement boundary. CoreHID is a fallback implementation, not an entitlement bypass.
+
 ## Pairing guidance
 
-Use the red SYNC button for the most reliable pairing. In particular, newer `RVL-CNT-01-TR` remotes can behave differently when awakened with 1 + 2, and output reports may cause them to shut down during setup.
+Use the red SYNC button. Holding 1 + 2 uses a different legacy pairing path and is less reliable, especially with `-TR` remotes. Already-paired remotes are opened directly. After two pairing failures, WiiMacMote pauses instead of repeatedly hammering the Bluetooth service.
 
-Already-paired remotes are not paired again. Press any button to wake one; WiiMacMote asks macOS to open its existing connection and waits for the HID service.
+## Project map
 
-After two pairing failures, the app stops retrying for 30 seconds. This is deliberate protection against the repeated pairing-daemon loop seen on recent Tahoe builds. Use **Retry** after pressing SYNC again.
+- `WiimoteManager.swift` — app state, persistence, Bluetooth permission/power gate, inquiry, and bounded pairing.
+- `WiimotePairingBridge.m` — runtime-checked Objective-C boundary for binary-PIN pairing selectors.
+- `WiimoteHIDController.swift` — physical HID lifecycle, report I/O, player sessions, and snapshots.
+- `WiimoteProtocol.swift` — Wii Remote report parser.
+- `GamepadMapping.swift` — canonical gamepad state and Wii Remote mappings.
+- `VirtualGamepadReports.swift` — virtual identities, descriptors, and report encoders.
+- `VirtualGamepad.swift` — IOHIDUserDevice/CoreHID publishers and lifecycle.
+- `DeveloperLabEnvironment.swift` — runtime entitlement visibility and AMFI boot-argument diagnostics.
+- `DEVELOPER_LAB.md` — restricted-entitlement local test procedure and validation ladder.
+- `THIRD_PARTY_NOTICES.md` — source attribution and license notices.
 
-## Virtual output mapping
+## Distribution boundary
 
-| Wii Remote | Sideways profile | Upright profile |
-|---|---|---|
-| D-pad | Rotated to gamepad D-pad/left stick | Direct D-pad/left stick |
-| 2 / 1 | South / East | West / North |
-| A / B | North / West | South / East |
-| + / − | Start / Select | Start / Select |
-| Home | Home | Home |
-| Tilt (optional) | Right stick, rotated | Right stick, direct |
-
-## Project layout
-
-- `WiimoteManager.swift` — application state, Bluetooth permission gate, classic inquiry, and bounded pairing state machine.
-- `WiimotePairingBridge.m` — small Objective-C boundary around the binary-PIN private selectors.
-- `WiimoteHIDController.swift` — physical HID lifecycle, report I/O, throttled UI snapshots, rumble, LEDs, and motion filtering.
-- `WiimoteProtocol.swift` — allocation-light Wii Remote packet parser.
-- `VirtualGamepad.swift` — experimental generic virtual HID output.
-- `GamepadMapping.swift` — testable controller profiles.
-- `Tests/CoreTests.swift` — parser and mapping smoke tests.
-- `MODERNIZATION.md` — research findings, design rationale, and remaining work.
-- `VALIDATION.md` — checks completed here and the remaining macOS/hardware test matrix.
-
-## Distribution
-
-For a local unsigned build, use `Scripts/build.sh`. For a distributable release, select your Developer ID team, archive in Xcode, sign with Developer ID Application, and notarize. Private API use means Mac App Store submission is not appropriate.
+The private Classic Bluetooth pairing selectors make Mac App Store distribution inappropriate. A public Developer ID build that carries the virtual-HID entitlement also requires Apple authorization for that entitlement. The Developer Lab scheme is for local research, not redistribution.

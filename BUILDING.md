@@ -1,56 +1,75 @@
 # Building and validating WiiMacMote
 
-## Supported build hosts
+## Build host
 
-- macOS 14 or newer.
-- Xcode 15 or newer.
-- Apple silicon or Intel.
+Use macOS with Xcode 16 or newer. Xcode 26 is recommended for current macOS; the project keeps an explicit, conventional project structure rather than requiring synchronized-folder features.
 
-The project file uses object version 56 and explicit file groups. It intentionally avoids Xcode 26 synchronized folders so older compatible Xcode releases and Intel Macs can open it.
+## Standard configuration
 
-## Xcode
+The Standard configuration targets macOS 14+, keeps Hardened Runtime enabled, and omits the restricted virtual-HID entitlement.
 
-Open `WiiMacMote.xcodeproj`, select the WiiMacMote scheme, choose My Mac, then build.
+In Xcode, open `WiiMacMote.xcodeproj`, select **WiiMacMote**, choose **My Mac**, and build. No development team is stored in the project.
 
-No development team is stored in source control. For an ad-hoc local run, Xcode can sign automatically. For release distribution, select a Developer ID team in the target's Signing & Capabilities pane.
-
-## Command line
+Portable and unsigned command-line validation:
 
 ```sh
-./Scripts/test-core.sh
 ./Scripts/verify-source.sh
 ./Scripts/build.sh
 ```
 
-`build.sh` performs a Release build with code signing disabled and places DerivedData under `build/`. It is useful for compilation verification, not distribution.
-
-To create a universal archive after configuring signing:
+`build.sh` creates an unsigned Release product under `build/DerivedData` and is intended for compile verification. A universal signed archive can be created after configuring a signing identity:
 
 ```sh
 ./Scripts/archive-universal.sh
 ```
 
-The archive explicitly requests `arm64 x86_64` and sets `ONLY_ACTIVE_ARCH=NO`.
+## Local AMFI Lab configuration
 
-## Permissions and capabilities
+The **WiiMacMote Developer Lab** scheme uses the `DeveloperLab` build configuration. It adds the virtual-HID entitlement, disables Hardened Runtime for the lab product, uses a separate bundle identifier, and defines `DEVELOPER_LAB`.
 
-- App Sandbox: off.
-- Hardened Runtime: on.
-- Bluetooth device entitlement: on.
-- Bluetooth usage description: present in `Info.plist`.
-- Input Monitoring: not requested.
-- Accessibility: not requested.
-- Restricted virtual-HID entitlement: **not included** in the default target. Apple controls access to `com.apple.developer.hid.virtual.device`; without it, experimental virtual output may fail cleanly at creation time. Raw Wii Remote input, battery, LEDs, rumble, motion, and diagnostics do not depend on that entitlement.
+The deterministic command-line path intentionally separates compilation from signing:
+
+```sh
+./Scripts/run-developer-lab.sh
+```
+
+`build-developer-lab.sh` passes `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and an empty signing identity so Xcode never asks for an Apple team or provisioning profile. It then invokes `sign-developer-lab.sh`, which applies a local ad-hoc signature containing the entitlement, followed by `diagnose-developer-lab.sh`. `run-developer-lab.sh` delegates to `launch-developer-lab.sh`, which executes the bundle binary directly.
+
+To reapply the signature to a built app:
+
+```sh
+./Scripts/sign-developer-lab.sh /path/to/WiiMacMote.app
+```
+
+Inspect it with:
+
+```sh
+codesign -d --entitlements :- /path/to/WiiMacMote.app
+```
+
+An ad-hoc signature is not Apple authorization for a restricted entitlement. This product is intended only for an isolated developer Mac whose owner has already relaxed AMFI enforcement. See `DEVELOPER_LAB.md` before launch.
+
+## Build settings
+
+| Setting | Standard | Developer Lab |
+|---|---:|---:|
+| Deployment target | macOS 14 | macOS 14 |
+| CoreHID backend | runtime macOS 15+ | runtime macOS 15+ |
+| Hardened Runtime | On | Off |
+| App Sandbox | Off | Off |
+| Bluetooth entitlement | Yes | Yes |
+| Virtual-HID entitlement | No | Yes |
+| Signing | Xcode/local or unsigned script | Unsigned Xcode build, then explicit ad-hoc `codesign -` |
+
+CoreHID is weak-linked so the app can still launch on macOS 14. The source is compiled conditionally when the selected SDK contains CoreHID, and every call is guarded by a macOS 15 availability check.
 
 ## Validation checklist
 
-1. `Scripts/test-core.sh` passes.
-2. Xcode builds Debug and Release with no source errors.
-3. `lipo -archs` reports both `arm64` and `x86_64` for the release binary when building universal.
-4. First launch shows the Bluetooth permission prompt.
-5. Red-SYNC pairing succeeds without repeated error loops.
-6. Existing paired remotes reconnect on a normal button press.
-7. Buttons, battery, player LED, report rate, rumble, and motion update.
-8. Connecting/removing four devices does not leak report buffers or leave virtual buttons held.
-9. Disabling virtual output immediately sends a neutral report and removes the user device.
-10. The target game's raw HID and/or Game Controller behavior is recorded, because virtual-device recognition is application-specific.
+1. `Scripts/verify-source.sh` passes.
+2. Standard Debug and Release build without source errors.
+3. DeveloperLab builds without an Apple team, is explicitly ad-hoc signed, and its signature contains `com.apple.developer.hid.virtual.device`.
+4. The Standard signature does not contain that entitlement.
+5. Physical Wii Remote pairing, buttons, battery, LEDs, rumble, and motion work with virtual output disabled.
+6. Each virtual identity is tested separately through IORegistry/raw HID, Game Controller, System Settings, Steam/SDL, Dolphin, and one target game.
+7. Disabling or changing a profile sends a neutral report and removes the prior virtual device.
+8. Apple silicon and Intel results are recorded separately.

@@ -12,6 +12,10 @@ struct ContentView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if WiiMacMoteBuildFlavor.isDeveloperLab {
+                        developerLabBanner
+                    }
+
                     statusCard
 
                     if manager.wiimotes.isEmpty {
@@ -34,7 +38,7 @@ struct ContentView: View {
             Divider()
             actionBar
         }
-        .frame(minWidth: 700, minHeight: 680)
+        .frame(minWidth: 720, minHeight: 760)
         .onAppear { manager.start() }
     }
 
@@ -52,7 +56,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("WiiMacMote")
                     .font(.title2.weight(.semibold))
-                Text("Modern Wii Remote bridge for macOS")
+                Text("Modern Wii Remote bridge for macOS · \(WiiMacMoteBuildFlavor.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -71,6 +75,63 @@ struct ContentView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .background(.regularMaterial)
+    }
+
+    private var developerLabEnvironment: DeveloperLabEnvironmentSnapshot {
+        DeveloperLabEnvironment.snapshot()
+    }
+
+    private var developerLabBanner: some View {
+        GroupBox {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "hammer.circle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.title3)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Local ad-hoc virtual-HID lab")
+                        .font(.headline)
+                    Text("This build is for developers testing on a deliberately SIP/AMFI-relaxed Mac. It uses an ad-hoc signature and does not depend on an Apple team, provisioning profile, or WaveBird's approved signature. WiiMacMote never changes system security settings itself.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Label(
+                        developerLabEnvironment.entitlementSummary,
+                        systemImage: developerLabEnvironment.virtualHIDEntitlementVisible
+                            ? "checkmark.seal.fill"
+                            : "xmark.seal.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        developerLabEnvironment.virtualHIDEntitlementVisible ? .green : .red
+                    )
+
+                    Label(
+                        developerLabEnvironment.signingSummary,
+                        systemImage: developerLabEnvironment.teamIdentifier == nil
+                            ? "signature"
+                            : "person.badge.key.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    Label(
+                        developerLabEnvironment.amfiSummary,
+                        systemImage: developerLabEnvironment.amfiRelaxationHintDetected
+                            ? "exclamationmark.shield.fill"
+                            : "shield.lefthalf.filled"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        developerLabEnvironment.amfiRelaxationHintDetected ? .orange : .secondary
+                    )
+                }
+
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var statusCard: some View {
@@ -207,7 +268,7 @@ struct ContentView: View {
                         metricLabel("Virtual HID")
                         HStack(spacing: 5) {
                             Image(systemName: wiimote.virtualGamepadActive ? "checkmark.circle.fill" : "minus.circle")
-                            Text(wiimote.virtualGamepadActive ? "Active" : "Off")
+                            Text(virtualGamepadText(wiimote))
                         }
                         .foregroundStyle(wiimote.virtualGamepadActive ? .green : .secondary)
                     }
@@ -243,6 +304,13 @@ struct ContentView: View {
             }
             .padding(.top, 3)
         }
+    }
+
+    private func virtualGamepadText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
+        guard wiimote.virtualGamepadActive else { return "Off" }
+        return [wiimote.virtualGamepadIdentity, wiimote.virtualGamepadBackend]
+            .compactMap { $0 }
+            .joined(separator: " · ")
     }
 
     private func metricLabel(_ text: String) -> some View {
@@ -288,10 +356,52 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 13) {
                 Toggle("Create an experimental virtual HID gamepad", isOn: $manager.virtualGamepadEnabled)
 
-                Text("This appears to raw HID consumers as a generic 16-button gamepad. macOS has no supported virtual-controller framework, so some Game Controller-based games deliberately ignore it.")
+                if !WiiMacMoteBuildFlavor.isDeveloperLab {
+                    Label(
+                        "The Standard scheme intentionally omits Apple's restricted virtual-HID entitlement. Use the WiiMacMote Developer Lab scheme and its explicit ad-hoc signing script for local virtual-device testing.",
+                        systemImage: "lock.shield"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Picker("Controller identity", selection: $manager.virtualGamepadIdentity) {
+                    ForEach(VirtualGamepadIdentity.allCases) { identity in
+                        Text(identity.title + (identity.isRecommended ? " · recommended" : ""))
+                            .tag(identity)
+                    }
+                }
+                .disabled(!manager.virtualGamepadEnabled)
+
+                Text(manager.virtualGamepadIdentity.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if manager.virtualGamepadIdentity.isHardwareImpersonation {
+                    Label(
+                        "Compatibility profile: this publishes another vendor's VID/PID for research. Recognition is not guaranteed, and no real Bluetooth transport is created.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Picker("Publication backend", selection: $manager.virtualGamepadBackendPreference) {
+                    ForEach(VirtualGamepadBackendPreference.allCases) { backend in
+                        Text(backend.title).tag(backend)
+                    }
+                }
+                .disabled(!manager.virtualGamepadEnabled)
+
+                Text(manager.virtualGamepadBackendPreference.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Divider()
 
                 Picker("Button profile", selection: $manager.controllerProfile) {
                     ForEach(ControllerProfile.allCases) { profile in
@@ -307,7 +417,14 @@ struct ContentView: View {
                 Toggle("Map accelerometer tilt to the right stick", isOn: $manager.motionRightStickEnabled)
                     .disabled(!manager.virtualGamepadEnabled)
 
-                Toggle("Continue scanning for additional remotes", isOn: $manager.automaticScanning)
+                HStack {
+                    Toggle("Continue scanning for additional remotes", isOn: $manager.automaticScanning)
+                    Spacer()
+                    Button("Open Accessibility Settings") {
+                        manager.openAccessibilitySettings()
+                    }
+                    .help("Some target applications may request Accessibility access. The virtual-HID entitlement is separate.")
+                }
             }
             .padding(.top, 4)
         }

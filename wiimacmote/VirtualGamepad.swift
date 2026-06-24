@@ -1,18 +1,48 @@
-import Foundation
 import Darwin
+import Foundation
 import IOKit
 import IOKit.hid
+#if canImport(CoreHID)
+import CoreHID
+#endif
+
+enum WiiMacMoteBuildFlavor {
+    #if DEVELOPER_LAB
+    static let isDeveloperLab = true
+    static let title = "Local AMFI Lab"
+    #else
+    static let isDeveloperLab = false
+    static let title = "Standard"
+    #endif
+}
+
 
 enum VirtualGamepadCreationError: LocalizedError {
-    case deviceCreationFailed
-    case initialReportFailed(IOReturn)
+    case restrictedEntitlementMissing
+    case backendUnavailable(VirtualGamepadBackendKind, String)
+    case deviceCreationFailed(
+        VirtualGamepadBackendKind,
+        VirtualGamepadIdentity,
+        entitlementVisible: Bool
+    )
+    case initialReportFailed(VirtualGamepadBackendKind, IOReturn)
+    case allBackendsFailed([String])
 
     var errorDescription: String? {
         switch self {
-        case .deviceCreationFailed:
-            return "macOS did not create the virtual HID device. Current macOS releases normally require Apple's restricted virtual-HID entitlement."
-        case .initialReportFailed(let code):
-            return "The virtual HID device was created but rejected its first report (\(Self.hex(code)))."
+        case .restrictedEntitlementMissing:
+            return "This process does not carry com.apple.developer.hid.virtual.device. Build and ad-hoc sign the Local AMFI Lab scheme before enabling virtual output."
+        case .backendUnavailable(let backend, let reason):
+            return "\(backend.rawValue) is unavailable: \(reason)"
+        case .deviceCreationFailed(let backend, let identity, let entitlementVisible):
+            if entitlementVisible {
+                return "\(backend.rawValue) could not create the \(identity.shortTitle) device even though the restricted virtual-HID entitlement is visible. Check the Developer Lab preflight output, AMFI state, and the macOS unified log."
+            }
+            return "\(backend.rawValue) could not create the \(identity.shortTitle) device, and the running task does not expose \(DeveloperLabEnvironment.virtualHIDEntitlement). Build and ad-hoc sign with the Developer Lab scripts before testing on an AMFI-relaxed Mac."
+        case .initialReportFailed(let backend, let code):
+            return "\(backend.rawValue) created the device but rejected its first report (\(Self.hex(code)))."
+        case .allBackendsFailed(let failures):
+            return "No virtual HID backend succeeded. \(failures.joined(separator: " · "))"
         }
     }
 
@@ -21,9 +51,17 @@ enum VirtualGamepadCreationError: LocalizedError {
     }
 }
 
+private protocol VirtualGamepadBackend: AnyObject {
+    var kind: VirtualGamepadBackendKind { get }
+
+    /// Returns an IOKit result for synchronous backends. `nil` means the report
+    /// was accepted into an asynchronous backend queue.
+    func submit(_ report: Data) -> IOReturn?
+    func cancel()
+}
+
 /// Keeps the CF object alive until IOKit runs its asynchronous cancel handler.
-/// The cancel handler clears `device`, breaking the temporary retain cycle.
-private final class VirtualDeviceLifetime {
+private final class IOHIDVirtualDeviceLifetime {
     var device: IOHIDUserDevice?
 
     init(device: IOHIDUserDevice) {
@@ -31,87 +69,28 @@ private final class VirtualDeviceLifetime {
     }
 }
 
-/// Experimental virtual HID output for software that consumes generic HID
-/// gamepads. macOS does not provide a generally available, supported virtual
-/// Game Controller API, so individual games may ignore this device even when
-/// raw HID tools can see it.
-final class VirtualGamepad {
-    let playerIndex: Int
+private final class IOHIDUserDeviceGamepadBackend: VirtualGamepadBackend {
+    let kind = VirtualGamepadBackendKind.ioHIDUserDevice
 
     private let queue: DispatchQueue
-    private let queueKey = DispatchSpecificKey<Void>()
     private var device: IOHIDUserDevice?
-    private var lifetime: VirtualDeviceLifetime?
-    private var lastState = VirtualGamepadState.neutral
-    private var hasSentState = false
+    private var lifetime: IOHIDVirtualDeviceLifetime?
 
-    init(playerIndex: Int) throws {
-        self.playerIndex = playerIndex
-        self.queue = DispatchQueue(
-            label: "dev.wiimacmote.virtual-gamepad.p\(playerIndex)",
-            qos: .userInteractive
-        )
-        queue.setSpecific(key: queueKey, value: ())
+    init(
+        specification: VirtualGamepadSpecification,
+        queue: DispatchQueue
+    ) throws {
+        self.queue = queue
 
-        let descriptor: [UInt8] = [
-            0x05, 0x01,        // Usage Page (Generic Desktop)
-            0x09, 0x05,        // Usage (Game Pad)
-            0xA1, 0x01,        // Collection (Application)
-
-            // Four signed 8-bit axes: left X/Y and right X/Y.
-            0x09, 0x01,        //   Usage (Pointer)
-            0xA1, 0x00,        //   Collection (Physical)
-            0x09, 0x30,        //     Usage (X)
-            0x09, 0x31,        //     Usage (Y)
-            0x09, 0x32,        //     Usage (Z)
-            0x09, 0x35,        //     Usage (Rz)
-            0x15, 0x81,        //     Logical Minimum (-127)
-            0x25, 0x7F,        //     Logical Maximum (127)
-            0x75, 0x08,        //     Report Size (8)
-            0x95, 0x04,        //     Report Count (4)
-            0x81, 0x02,        //     Input (Data, Variable, Absolute)
-            0xC0,              //   End Collection
-
-            // Hat switch, with 8 as the null/released value.
-            0x09, 0x39,        //   Usage (Hat Switch)
-            0x15, 0x00,        //   Logical Minimum (0)
-            0x25, 0x07,        //   Logical Maximum (7)
-            0x35, 0x00,        //   Physical Minimum (0)
-            0x46, 0x3B, 0x01,  //   Physical Maximum (315)
-            0x65, 0x14,        //   Unit (degrees)
-            0x75, 0x04,        //   Report Size (4)
-            0x95, 0x01,        //   Report Count (1)
-            0x81, 0x42,        //   Input (Data, Variable, Absolute, Null)
-
-            // Sixteen ordinary buttons.
-            0x05, 0x09,        //   Usage Page (Button)
-            0x19, 0x01,        //   Usage Minimum (Button 1)
-            0x29, 0x10,        //   Usage Maximum (Button 16)
-            0x15, 0x00,        //   Logical Minimum (0)
-            0x25, 0x01,        //   Logical Maximum (1)
-            0x75, 0x01,        //   Report Size (1)
-            0x95, 0x10,        //   Report Count (16)
-            0x81, 0x02,        //   Input (Data, Variable, Absolute)
-
-            // 32 axis bits + 4 hat bits + 16 button bits = 52 bits.
-            // Pad to an 8-byte input report.
-            0x75, 0x01,        //   Report Size (1)
-            0x95, 0x0C,        //   Report Count (12)
-            0x81, 0x03,        //   Input (Constant, Variable, Absolute)
-            0xC0               // End Collection
-        ]
-
-        // These identifiers are deliberately local and generic; the device no
-        // longer impersonates Microsoft's Xbox 360 hardware.
         let properties: [String: Any] = [
-            kIOHIDReportDescriptorKey as String: Data(descriptor),
-            kIOHIDProductKey as String: "WiiMacMote Virtual Gamepad P\(playerIndex)",
-            kIOHIDManufacturerKey as String: "WiiMacMote",
-            kIOHIDSerialNumberKey as String: "WMM-VIRTUAL-P\(playerIndex)",
-            kIOHIDVendorIDKey as String: NSNumber(value: 0x574D), // "WM"
-            kIOHIDProductIDKey as String: NSNumber(value: 0x0200 + playerIndex),
-            kIOHIDVersionNumberKey as String: NSNumber(value: 0x0200),
-            kIOHIDTransportKey as String: "Virtual",
+            kIOHIDReportDescriptorKey as String: Data(specification.descriptor),
+            kIOHIDProductKey as String: specification.productName,
+            kIOHIDManufacturerKey as String: specification.manufacturer,
+            kIOHIDSerialNumberKey as String: specification.serialNumber,
+            kIOHIDVendorIDKey as String: NSNumber(value: specification.vendorID),
+            kIOHIDProductIDKey as String: NSNumber(value: specification.productID),
+            kIOHIDVersionNumberKey as String: NSNumber(value: specification.versionNumber),
+            kIOHIDTransportKey as String: specification.ioKitTransport,
             kIOHIDPrimaryUsagePageKey as String: NSNumber(value: 0x01),
             kIOHIDPrimaryUsageKey as String: NSNumber(value: 0x05)
         ]
@@ -121,42 +100,229 @@ final class VirtualGamepad {
             properties as CFDictionary,
             IOOptionBits(kIOHIDOptionsTypeNone)
         ) else {
-            throw VirtualGamepadCreationError.deviceCreationFailed
+            throw VirtualGamepadCreationError.deviceCreationFailed(
+                kind,
+                specification.identity,
+                entitlementVisible: DeveloperLabEnvironment.hasVirtualHIDEntitlement()
+            )
         }
 
-        let lifetime = VirtualDeviceLifetime(device: created)
+        let lifetime = IOHIDVirtualDeviceLifetime(device: created)
         self.device = created
         self.lifetime = lifetime
-
         IOHIDUserDeviceSetDispatchQueue(created, queue)
         IOHIDUserDeviceSetCancelHandler(created) { [lifetime] in
             lifetime.device = nil
         }
         IOHIDUserDeviceActivate(created)
+    }
 
-        let initialResult = Self.submit(.neutral, to: created)
-        guard initialResult == kIOReturnSuccess else {
-            self.device = nil
-            IOHIDUserDeviceCancel(created)
-            throw VirtualGamepadCreationError.initialReportFailed(initialResult)
+    deinit {
+        cancel()
+    }
+
+    func submit(_ report: Data) -> IOReturn? {
+        guard let device else { return kIOReturnNotOpen }
+        return report.withUnsafeBytes { rawBuffer -> IOReturn in
+            guard let baseAddress = rawBuffer.baseAddress else {
+                return kIOReturnBadArgument
+            }
+            return IOHIDUserDeviceHandleReportWithTimeStamp(
+                device,
+                mach_absolute_time(),
+                baseAddress.assumingMemoryBound(to: UInt8.self),
+                report.count
+            )
+        }
+    }
+
+    func cancel() {
+        guard let device else { return }
+        self.device = nil
+        IOHIDUserDeviceCancel(device)
+    }
+}
+
+#if canImport(CoreHID)
+@available(macOS 15.0, *)
+private final class CoreHIDGamepadBackend: VirtualGamepadBackend {
+    let kind = VirtualGamepadBackendKind.coreHID
+
+    private let device: HIDVirtualDevice
+    private let delegate: Delegate
+    private let stateLock = NSLock()
+    private var continuation: AsyncStream<Data>.Continuation?
+    private var worker: Task<Void, Never>?
+    private var isCancelled = false
+
+    init(specification: VirtualGamepadSpecification) throws {
+        let properties = HIDVirtualDevice.Properties(
+            descriptor: Data(specification.descriptor),
+            vendorID: UInt32(specification.vendorID),
+            productID: UInt32(specification.productID),
+            transport: .bluetoothLowEnergy,
+            product: specification.productName,
+            manufacturer: specification.manufacturer,
+            versionNumber: UInt64(specification.versionNumber),
+            serialNumber: specification.serialNumber
+        )
+        guard let created = HIDVirtualDevice(properties: properties) else {
+            throw VirtualGamepadCreationError.deviceCreationFailed(
+                kind,
+                specification.identity,
+                entitlementVisible: DeveloperLabEnvironment.hasVirtualHIDEntitlement()
+            )
+        }
+
+        let delegate = Delegate()
+        var capturedContinuation: AsyncStream<Data>.Continuation?
+        let stream = AsyncStream<Data>(bufferingPolicy: .bufferingNewest(128)) { continuation in
+            capturedContinuation = continuation
+        }
+
+        self.device = created
+        self.delegate = delegate
+        self.continuation = capturedContinuation
+        self.worker = Task { [created, delegate, stream] in
+            await created.activate(delegate: delegate)
+            for await report in stream {
+                guard !Task.isCancelled else { break }
+                do {
+                    try await created.dispatchInputReport(data: report, timestamp: .now)
+                } catch {
+                    let message = "[WiiMacMote] CoreHID report failed: \(error.localizedDescription)\n"
+                    FileHandle.standardError.write(Data(message.utf8))
+                }
+            }
+        }
+    }
+
+    deinit {
+        cancel()
+    }
+
+    func submit(_ report: Data) -> IOReturn? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !isCancelled, let continuation else { return kIOReturnNotOpen }
+        continuation.yield(report)
+        return nil
+    }
+
+    func cancel() {
+        stateLock.lock()
+        guard !isCancelled else {
+            stateLock.unlock()
+            return
+        }
+        isCancelled = true
+        let continuation = self.continuation
+        self.continuation = nil
+        let worker = self.worker
+        self.worker = nil
+        stateLock.unlock()
+
+        continuation?.finish()
+        worker?.cancel()
+    }
+
+    private final class Delegate: HIDVirtualDeviceDelegate, Sendable {
+        func hidVirtualDevice(
+            _ device: HIDVirtualDevice,
+            receivedSetReportRequestOfType type: HIDReportType,
+            id: HIDReportID?,
+            data: Data
+        ) async throws {
+            // Output reports (including rumble handshakes) are intentionally
+            // ignored in 2.0.5; publishing input remains independent.
+        }
+
+        func hidVirtualDevice(
+            _ device: HIDVirtualDevice,
+            receivedGetReportRequestOfType type: HIDReportType,
+            id: HIDReportID?,
+            maxSize: Int
+        ) async throws -> Data {
+            Data()
+        }
+    }
+}
+#endif
+
+/// Experimental virtual HID output. A separate canonical state is encoded for
+/// each advertised controller identity, while publication is delegated to
+/// either IOHIDUserDevice or CoreHID.
+final class VirtualGamepad {
+    let playerIndex: Int
+    let identity: VirtualGamepadIdentity
+    let backendKind: VirtualGamepadBackendKind
+
+    private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<Void>()
+    private let backend: VirtualGamepadBackend
+    private var lastState = VirtualGamepadState.neutral
+    private var hasSentState = false
+
+    init(
+        playerIndex: Int,
+        identity: VirtualGamepadIdentity,
+        backendPreference: VirtualGamepadBackendPreference
+    ) throws {
+        guard DeveloperLabEnvironment.hasVirtualHIDEntitlement() else {
+            throw VirtualGamepadCreationError.restrictedEntitlementMissing
+        }
+
+        self.playerIndex = playerIndex
+        self.identity = identity
+        self.queue = DispatchQueue(
+            label: "dev.wiimacmote.virtual-gamepad.p\(playerIndex)",
+            qos: .userInteractive
+        )
+        queue.setSpecific(key: queueKey, value: ())
+
+        let specification = VirtualGamepadReports.specification(
+            for: identity,
+            playerIndex: playerIndex
+        )
+        let backend = try Self.makeBackend(
+            preference: backendPreference,
+            specification: specification,
+            queue: queue
+        )
+        self.backend = backend
+        self.backendKind = backend.kind
+
+        let initialReports = VirtualGamepadReports.reports(
+            for: .neutral,
+            identity: identity,
+            previousState: nil
+        )
+        for report in initialReports {
+            if let result = backend.submit(report), result != kIOReturnSuccess {
+                backend.cancel()
+                throw VirtualGamepadCreationError.initialReportFailed(backend.kind, result)
+            }
         }
         hasSentState = true
     }
 
     deinit {
-        guard let device else { return }
-
-        let sendNeutral = {
-            _ = Self.submit(.neutral, to: device)
+        let operation = { [backend, identity, lastState] in
+            for report in VirtualGamepadReports.reports(
+                for: .neutral,
+                identity: identity,
+                previousState: lastState
+            ) {
+                _ = backend.submit(report)
+            }
+            backend.cancel()
         }
+
         if DispatchQueue.getSpecific(key: queueKey) != nil {
-            sendNeutral()
+            operation()
         } else {
-            queue.sync(execute: sendNeutral)
+            queue.sync(execute: operation)
         }
-
-        self.device = nil
-        IOHIDUserDeviceCancel(device)
     }
 
     func update(_ state: VirtualGamepadState) {
@@ -173,11 +339,28 @@ final class VirtualGamepad {
         synchronously: Bool
     ) {
         let operation = { [weak self] in
-            guard let self, let device = self.device else { return }
+            guard let self else { return }
             guard force || !self.hasSentState || state != self.lastState else { return }
 
-            let result = Self.submit(state, to: device)
-            if result == kIOReturnSuccess {
+            let reports = VirtualGamepadReports.reports(
+                for: state,
+                identity: self.identity,
+                previousState: self.hasSentState ? self.lastState : nil
+            )
+            var accepted = true
+            for report in reports {
+                if let result = self.backend.submit(report), result != kIOReturnSuccess {
+                    accepted = false
+                    let message = String(
+                        format: "[WiiMacMote] %@ report failed: 0x%08X\n",
+                        self.backendKind.rawValue,
+                        UInt32(bitPattern: result)
+                    )
+                    FileHandle.standardError.write(Data(message.utf8))
+                    break
+                }
+            }
+            if accepted {
                 self.lastState = state
                 self.hasSentState = true
             }
@@ -194,35 +377,54 @@ final class VirtualGamepad {
         }
     }
 
-    private static func submit(
-        _ state: VirtualGamepadState,
-        to device: IOHIDUserDevice
-    ) -> IOReturn {
-        var report = makeReport(from: state)
-        return report.withUnsafeBytes { rawBuffer -> IOReturn in
-            guard let baseAddress = rawBuffer.baseAddress else {
-                return kIOReturnBadArgument
-            }
-            return IOHIDUserDeviceHandleReportWithTimeStamp(
-                device,
-                mach_absolute_time(),
-                baseAddress.assumingMemoryBound(to: UInt8.self),
-                report.count
-            )
+    private static func makeBackend(
+        preference: VirtualGamepadBackendPreference,
+        specification: VirtualGamepadSpecification,
+        queue: DispatchQueue
+    ) throws -> VirtualGamepadBackend {
+        let order: [VirtualGamepadBackendKind]
+        switch preference {
+        case .automatic:
+            order = [.ioHIDUserDevice, .coreHID]
+        case .ioHIDUserDevice:
+            order = [.ioHIDUserDevice]
+        case .coreHID:
+            order = [.coreHID]
         }
-    }
 
-    private static func makeReport(from state: VirtualGamepadState) -> [UInt8] {
-        var report = [UInt8](repeating: 0, count: 8)
-        report[0] = UInt8(bitPattern: state.leftX)
-        report[1] = UInt8(bitPattern: state.leftY)
-        report[2] = UInt8(bitPattern: state.rightX)
-        report[3] = UInt8(bitPattern: state.rightY)
+        var failures: [String] = []
+        for kind in order {
+            do {
+                switch kind {
+                case .ioHIDUserDevice:
+                    return try IOHIDUserDeviceGamepadBackend(
+                        specification: specification,
+                        queue: queue
+                    )
+                case .coreHID:
+                    #if canImport(CoreHID)
+                    if #available(macOS 15.0, *) {
+                        return try CoreHIDGamepadBackend(specification: specification)
+                    }
+                    throw VirtualGamepadCreationError.backendUnavailable(
+                        kind,
+                        "macOS 15 or newer is required"
+                    )
+                    #else
+                    throw VirtualGamepadCreationError.backendUnavailable(
+                        kind,
+                        "this SDK does not include CoreHID"
+                    )
+                    #endif
+                }
+            } catch {
+                failures.append("\(kind.rawValue): \(error.localizedDescription)")
+            }
+        }
 
-        let buttons = state.buttons
-        report[4] = (state.hat & 0x0F) | (UInt8(buttons & 0x000F) << 4)
-        report[5] = UInt8((buttons >> 4) & 0x00FF)
-        report[6] = UInt8((buttons >> 12) & 0x000F)
-        return report
+        if failures.count == 1, let only = failures.first {
+            throw VirtualGamepadCreationError.allBackendsFailed([only])
+        }
+        throw VirtualGamepadCreationError.allBackendsFailed(failures)
     }
 }

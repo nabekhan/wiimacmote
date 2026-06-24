@@ -14,11 +14,15 @@ struct ConnectedWiimoteSnapshot: Identifiable, Equatable {
     let reportID: UInt8?
     let extensionConnected: Bool
     let virtualGamepadActive: Bool
+    let virtualGamepadIdentity: String?
+    let virtualGamepadBackend: String?
     let virtualGamepadError: String?
 }
 
 struct WiimoteHIDSettings: Equatable {
     var virtualGamepadEnabled: Bool
+    var virtualGamepadIdentity: VirtualGamepadIdentity
+    var virtualGamepadBackendPreference: VirtualGamepadBackendPreference
     var profile: ControllerProfile
     var motionRightStickEnabled: Bool
 }
@@ -98,7 +102,16 @@ final class WiimoteHIDController {
             self.settings = newSettings
 
             for session in self.sessions.values {
-                if previous.virtualGamepadEnabled != newSettings.virtualGamepadEnabled {
+                let virtualDeviceConfigurationChanged =
+                    previous.virtualGamepadEnabled != newSettings.virtualGamepadEnabled ||
+                    previous.virtualGamepadIdentity != newSettings.virtualGamepadIdentity ||
+                    previous.virtualGamepadBackendPreference != newSettings.virtualGamepadBackendPreference
+
+                if virtualDeviceConfigurationChanged {
+                    if session.virtualGamepad != nil {
+                        session.virtualGamepad?.reset()
+                        session.virtualGamepad = nil
+                    }
                     self.configureVirtualGamepad(for: session)
                 }
 
@@ -438,9 +451,17 @@ final class WiimoteHIDController {
         if settings.virtualGamepadEnabled {
             guard session.virtualGamepad == nil else { return }
             do {
-                session.virtualGamepad = try VirtualGamepad(playerIndex: session.playerIndex)
+                let gamepad = try VirtualGamepad(
+                    playerIndex: session.playerIndex,
+                    identity: settings.virtualGamepadIdentity,
+                    backendPreference: settings.virtualGamepadBackendPreference
+                )
+                session.virtualGamepad = gamepad
                 session.virtualGamepadError = nil
-                log("🎮", "Experimental virtual HID output is active for P\(session.playerIndex).")
+                log(
+                    "🎮",
+                    "P\(session.playerIndex) virtual output: \(gamepad.identity.shortTitle) via \(gamepad.backendKind.rawValue)."
+                )
             } catch {
                 session.virtualGamepadError = error.localizedDescription
                 log("❌", "Virtual output failed for P\(session.playerIndex): \(error.localizedDescription)")
@@ -539,6 +560,8 @@ final class WiimoteHIDController {
                     reportID: session.lastReportID,
                     extensionConnected: session.extensionConnected,
                     virtualGamepadActive: session.virtualGamepad != nil,
+                    virtualGamepadIdentity: session.virtualGamepad?.identity.shortTitle,
+                    virtualGamepadBackend: session.virtualGamepad?.backendKind.rawValue,
                     virtualGamepadError: session.virtualGamepadError
                 )
             }

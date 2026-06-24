@@ -103,6 +103,23 @@ final class WiimoteManager: NSObject, ObservableObject {
         }
     }
 
+    @Published var virtualGamepadIdentity: VirtualGamepadIdentity {
+        didSet {
+            defaults.set(virtualGamepadIdentity.rawValue, forKey: Keys.virtualGamepadIdentity)
+            applyHIDSettings()
+        }
+    }
+
+    @Published var virtualGamepadBackendPreference: VirtualGamepadBackendPreference {
+        didSet {
+            defaults.set(
+                virtualGamepadBackendPreference.rawValue,
+                forKey: Keys.virtualGamepadBackendPreference
+            )
+            applyHIDSettings()
+        }
+    }
+
     @Published var controllerProfile: ControllerProfile {
         didSet {
             defaults.set(controllerProfile.rawValue, forKey: Keys.controllerProfile)
@@ -122,6 +139,8 @@ final class WiimoteManager: NSObject, ObservableObject {
     private enum Keys {
         static let automaticScanning = "automaticScanning"
         static let virtualGamepadEnabled = "virtualGamepadEnabled"
+        static let virtualGamepadIdentity = "virtualGamepadIdentity"
+        static let virtualGamepadBackendPreference = "virtualGamepadBackendPreference"
         static let controllerProfile = "controllerProfile"
         static let motionRightStickEnabled = "motionRightStickEnabled"
     }
@@ -143,6 +162,16 @@ final class WiimoteManager: NSObject, ObservableObject {
         self.defaults = defaults
         self.automaticScanning = defaults.object(forKey: Keys.automaticScanning) as? Bool ?? true
         self.virtualGamepadEnabled = defaults.object(forKey: Keys.virtualGamepadEnabled) as? Bool ?? false
+        let defaultVirtualIdentity: VirtualGamepadIdentity =
+            WiiMacMoteBuildFlavor.isDeveloperLab ? .xboxSeries : .generic
+        self.virtualGamepadIdentity = VirtualGamepadIdentity(
+            rawValue: defaults.string(forKey: Keys.virtualGamepadIdentity) ?? ""
+        ) ?? defaultVirtualIdentity
+        let defaultVirtualBackend: VirtualGamepadBackendPreference =
+            WiiMacMoteBuildFlavor.isDeveloperLab ? .ioHIDUserDevice : .automatic
+        self.virtualGamepadBackendPreference = VirtualGamepadBackendPreference(
+            rawValue: defaults.string(forKey: Keys.virtualGamepadBackendPreference) ?? ""
+        ) ?? defaultVirtualBackend
         self.motionRightStickEnabled = defaults.object(forKey: Keys.motionRightStickEnabled) as? Bool ?? false
         self.controllerProfile = ControllerProfile(
             rawValue: defaults.string(forKey: Keys.controllerProfile) ?? ""
@@ -163,7 +192,23 @@ final class WiimoteManager: NSObject, ObservableObject {
         hasStarted = true
 
         hidController.start()
-        diagnostics.append("🚀", "WiiMacMote 2 initialized.")
+        diagnostics.append(
+            "🚀",
+            "WiiMacMote 2.0.5 (\(WiiMacMoteBuildFlavor.title)) initialized."
+        )
+
+        if WiiMacMoteBuildFlavor.isDeveloperLab {
+            let environment = DeveloperLabEnvironment.snapshot()
+            diagnostics.append(
+                environment.virtualHIDEntitlementVisible ? "✅" : "❌",
+                environment.entitlementSummary
+            )
+            diagnostics.append("🔏", environment.signingSummary)
+            diagnostics.append(
+                environment.amfiRelaxationHintDetected ? "⚠️" : "ℹ️",
+                environment.amfiSummary
+            )
+        }
 
         centralManager = CBCentralManager(
             delegate: self,
@@ -248,9 +293,18 @@ final class WiimoteManager: NSObject, ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    func openAccessibilitySettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     private var currentHIDSettings: WiimoteHIDSettings {
         WiimoteHIDSettings(
             virtualGamepadEnabled: virtualGamepadEnabled,
+            virtualGamepadIdentity: virtualGamepadIdentity,
+            virtualGamepadBackendPreference: virtualGamepadBackendPreference,
             profile: controllerProfile,
             motionRightStickEnabled: motionRightStickEnabled
         )

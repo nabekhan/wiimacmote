@@ -28,6 +28,11 @@ struct CoreTests {
         try testMalformedAndInterleavedReports()
         try testUprightMapping()
         try testSidewaysMapping()
+        try testVirtualIdentitySpecifications()
+        try testGenericVirtualReport()
+        try testXboxVirtualReports()
+        try testSwitchProVirtualReport()
+        try testAMFIBootArgumentParser()
         print("All WiiMacMote core tests passed.")
     }
 
@@ -126,4 +131,107 @@ struct CoreTests {
         try expect((state.buttons & VirtualGamepadButton.south.mask) != 0, "2 should map south")
         try expect((state.buttons & VirtualGamepadButton.select.mask) != 0, "- should map select")
     }
+    private static func testVirtualIdentitySpecifications() throws {
+        let generic = VirtualGamepadReports.specification(for: .generic, playerIndex: 2)
+        try expect(generic.descriptor.count == 71, "Generic descriptor length changed unexpectedly")
+        try expect(generic.vendorID == 0x574D, "Generic VID should remain WiiMacMote-owned")
+        try expect(generic.productID == 0x0202, "Generic per-player PID is wrong")
+
+        let xbox = VirtualGamepadReports.specification(for: .xboxSeries, playerIndex: 1)
+        try expect(xbox.descriptor.count == 309, "Xbox descriptor length changed unexpectedly")
+        try expect(xbox.vendorID == 0x045E && xbox.productID == 0x0B13, "Xbox Series identity is wrong")
+        try expect(xbox.ioKitTransport == "Bluetooth", "Xbox profile should advertise Bluetooth transport metadata")
+
+        let switchPro = VirtualGamepadReports.specification(for: .switchProSimple, playerIndex: 1)
+        try expect(switchPro.descriptor.count == 190, "Switch Pro descriptor length changed unexpectedly")
+        try expect(switchPro.vendorID == 0x057E && switchPro.productID == 0x2009, "Switch Pro identity is wrong")
+    }
+
+    private static func testGenericVirtualReport() throws {
+        var state = VirtualGamepadState.neutral
+        state.leftX = -12
+        state.leftY = 34
+        state.rightX = 56
+        state.rightY = -78
+        state.hat = 1
+        state.buttons = VirtualGamepadButton.south.mask |
+            VirtualGamepadButton.start.mask |
+            VirtualGamepadButton.home.mask
+
+        let report = VirtualGamepadReports.primaryReport(for: state, identity: .generic)
+        try expect(report.count == 8, "Generic input report must be 8 bytes")
+        try expect(report[0] == UInt8(bitPattern: -12), "Generic LX encoding is wrong")
+        try expect(report[1] == 34, "Generic LY encoding is wrong")
+        try expect(report[4] == 0x11, "Generic hat/button packing is wrong")
+        try expect(report[5] & 0x30 == 0x30, "Generic Start/Home buttons are wrong")
+    }
+
+    private static func testXboxVirtualReports() throws {
+        var state = VirtualGamepadState.neutral
+        state.leftX = 127
+        state.leftY = -127
+        state.hat = 1
+        state.buttons = VirtualGamepadButton.south.mask |
+            VirtualGamepadButton.north.mask |
+            VirtualGamepadButton.leftTrigger.mask |
+            VirtualGamepadButton.rightTrigger.mask |
+            VirtualGamepadButton.start.mask |
+            VirtualGamepadButton.home.mask
+
+        let native = VirtualGamepadReports.primaryReport(for: state, identity: .xboxSeries)
+        try expect(native.count == 17 && native[0] == 0x01, "Xbox native report header/length is wrong")
+        try expect(native[13] == 2, "Xbox north-east hat value is wrong")
+        try expect(native[14] & 0x11 == 0x11, "Xbox A/Y face-button bits are wrong")
+        try expect(native[15] & 0x18 == 0x18, "Xbox Menu/Guide bits are wrong")
+        try expect(native[9] == 0xFF && native[10] == 0x03, "Xbox left-trigger encoding is wrong")
+        try expect(native[11] == 0xFF && native[12] == 0x03, "Xbox right-trigger encoding is wrong")
+
+        let reports = VirtualGamepadReports.reports(
+            for: state,
+            identity: .xboxSeries,
+            previousState: .neutral
+        )
+        try expect(reports.count == 3, "Xbox Guide edge should emit native, GIP, and Guide reports")
+        try expect(reports[1].count == 19 && reports[1][0] == 0x20, "Xbox GIP report is wrong")
+        try expect(Array(reports[2]) == [0x07, 0x20, 0x00, 0x02, 0x01, 0x5B], "Xbox Guide edge report is wrong")
+    }
+
+    private static func testSwitchProVirtualReport() throws {
+        var state = VirtualGamepadState.neutral
+        state.leftX = -127
+        state.rightY = 127
+        state.hat = 6
+        state.buttons = VirtualGamepadButton.south.mask |
+            VirtualGamepadButton.east.mask |
+            VirtualGamepadButton.home.mask |
+            VirtualGamepadButton.auxiliary1.mask
+
+        let report = VirtualGamepadReports.primaryReport(for: state, identity: .switchProSimple)
+        try expect(report.count == 12 && report[0] == 0x3F, "Switch simple report header/length is wrong")
+        try expect(report[1] & 0x03 == 0x03, "Switch B/A bits are wrong")
+        try expect(report[2] & 0x30 == 0x30, "Switch Home/Capture bits are wrong")
+        try expect(report[3] == 6, "Switch hat value is wrong")
+    }
+
+    private static func testAMFIBootArgumentParser() throws {
+        try expect(
+            DeveloperLabEnvironment.containsAMFIRelaxation(
+                "keepsyms=1 amfi_get_out_of_my_way=0x1 debug=0x100"
+            ),
+            "Hex AMFI laboratory token should be detected"
+        )
+        try expect(
+            DeveloperLabEnvironment.containsAMFIRelaxation(
+                "amfi_get_out_of_my_way=1"
+            ),
+            "Decimal AMFI laboratory token should be detected"
+        )
+        try expect(
+            !DeveloperLabEnvironment.containsAMFIRelaxation(
+                "not_amfi_get_out_of_my_way=0x1 amfi_get_out_of_my_way=0x0"
+            ),
+            "Unrelated or disabled AMFI tokens must not match"
+        )
+    }
+
 }
