@@ -630,7 +630,7 @@ final class WiimoteManager: NSObject, ObservableObject {
     private func isSupportedWiimoteName(_ name: String) -> Bool {
         let normalized = name.uppercased()
         return normalized.contains("NINTENDO RVL-CNT-01") ||
-            normalized.contains("NINTENDO RVL-WBC") ||
+            normalized.contains("RVL-WBC") ||
             normalized == "WIIMOTE"
     }
 
@@ -697,7 +697,8 @@ final class WiimoteManager: NSObject, ObservableObject {
                 changed = true
             }
 
-            if let identifierHex = snapshot.extensionIdentifierHex,
+            if snapshot.remoteKind != .balanceBoard,
+               let identifierHex = snapshot.extensionIdentifierHex,
                let extensionName = snapshot.extensionName,
                !identifierHex.isEmpty {
                 let now = Date()
@@ -767,6 +768,11 @@ final class WiimoteManager: NSObject, ObservableObject {
             let motionPlusCapability = connectedSnapshot?.motionPlusCapability ??
                 record?.motionPlusCapability ??
                 WiimoteMotionPlusCapability(remoteKind: remoteKind)
+            let extensions = remoteKind == .balanceBoard ? [] : savedExtensionSnapshots(
+                address: normalizedAddress,
+                record: record,
+                connectedSnapshot: connectedSnapshot
+            )
             return SavedWiimoteSnapshot(
                 id: address,
                 name: name,
@@ -774,11 +780,7 @@ final class WiimoteManager: NSObject, ObservableObject {
                 isConnected: device.isConnected() || connectedAddresses.contains(normalizedAddress),
                 remoteKind: remoteKind,
                 motionPlusCapability: motionPlusCapability,
-                extensions: savedExtensionSnapshots(
-                    address: normalizedAddress,
-                    record: record,
-                    connectedSnapshot: connectedSnapshot
-                )
+                extensions: extensions
             )
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -1164,6 +1166,15 @@ extension WiimoteManager: IOBluetoothDeviceInquiryDelegate {
     }
 
     func deviceInquiryDeviceFound(_ sender: IOBluetoothDeviceInquiry!, device: IOBluetoothDevice!) {
+        guard let device else { return }
+        handleDiscoveredDevice(device)
+    }
+
+    func deviceInquiryDeviceNameUpdated(
+        _ sender: IOBluetoothDeviceInquiry!,
+        device: IOBluetoothDevice!,
+        devicesRemaining: UInt32
+    ) {
         guard let device else { return }
         handleDiscoveredDevice(device)
     }

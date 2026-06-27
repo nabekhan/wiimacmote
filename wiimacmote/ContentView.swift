@@ -398,8 +398,8 @@ struct ContentView: View {
 
     private func savedControllerRow(_ remote: SavedWiimoteSnapshot) -> some View {
         HStack(spacing: 12) {
-            ControllerArtwork(kind: .remote, active: remote.isConnected)
-                .frame(width: 42, height: 68)
+            savedControllerArtwork(remote)
+                .frame(width: 54, height: 68)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(remote.name)
@@ -429,6 +429,17 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private func savedControllerArtwork(_ remote: SavedWiimoteSnapshot) -> some View {
+        if remote.remoteKind == .balanceBoard {
+            ControllerArtwork(kind: .balanceBoard, active: remote.isConnected)
+                .frame(width: 54, height: 42)
+        } else {
+            ControllerArtwork(kind: .remote, active: remote.isConnected)
+                .frame(width: 42, height: 68)
+        }
     }
 
     @ViewBuilder
@@ -1041,10 +1052,10 @@ private struct ControllerArtwork: View {
             let height = geometry.size.height
             let outline = active ? Color.accentColor : Color.secondary
             ZStack {
-                RoundedRectangle(cornerRadius: height * 0.14, style: .continuous)
+                BalanceBoardShape()
                     .fill(outline.opacity(active ? 0.10 : 0.06))
                     .overlay {
-                        RoundedRectangle(cornerRadius: height * 0.14, style: .continuous)
+                        BalanceBoardShape()
                             .stroke(outline.opacity(active ? 0.80 : 0.55), lineWidth: 2)
                     }
                     .frame(width: width * 0.92, height: height * 0.46)

@@ -213,19 +213,10 @@ final class WiimoteHIDController {
         )
         manager = created
 
-        let vendorID = 0x057E
-        let matchOriginal: [String: Any] = [
-            kIOHIDVendorIDKey as String: vendorID,
-            kIOHIDProductIDKey as String: 0x0306
+        let matchNintendo: [String: Any] = [
+            kIOHIDVendorIDKey as String: 0x057E
         ]
-        let matchTR: [String: Any] = [
-            kIOHIDVendorIDKey as String: vendorID,
-            kIOHIDProductIDKey as String: 0x0330
-        ]
-        IOHIDManagerSetDeviceMatchingMultiple(
-            created,
-            [matchOriginal as CFDictionary, matchTR as CFDictionary] as CFArray
-        )
+        IOHIDManagerSetDeviceMatching(created, matchNintendo as CFDictionary)
 
         let callbackContext = HIDCallbackContext(owner: self)
         self.callbackContext = callbackContext
@@ -357,15 +348,16 @@ final class WiimoteHIDController {
     private func deviceMatched(_ device: IOHIDDevice) {
         let id = deviceIdentifier(device)
         guard sessions[id] == nil else { return }
+        let name = stringProperty(device, key: kIOHIDProductKey) ?? "Nintendo Wii Remote"
+        let productID = intProperty(device, key: kIOHIDProductIDKey) ?? 0
+        let remoteKind = WiimoteRemoteKind(name: name, productID: productID)
+        guard remoteKind != .unknown else { return }
         guard sessions.count < 4 else {
-            log("", "Ignoring an additional Wii Remote because four are already active.")
+            log("", "Ignoring an additional Wii controller because four are already active.")
             return
         }
 
-        let name = stringProperty(device, key: kIOHIDProductKey) ?? "Nintendo Wii Remote"
         let playerIndex = firstAvailablePlayerIndex()
-        let productID = intProperty(device, key: kIOHIDProductIDKey) ?? 0
-        let remoteKind = WiimoteRemoteKind(name: name, productID: productID)
         let session = Session(
             id: id,
             device: device,

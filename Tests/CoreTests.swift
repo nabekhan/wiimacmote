@@ -219,6 +219,10 @@ struct CoreTests {
             "RVL-CNT-01-TR should be classified as Wii Remote Plus"
         )
         try expect(
+            WiimoteRemoteKind(name: "Nintendo RVL-WBC-01", productID: nil) == .balanceBoard,
+            "RVL-WBC-01 should be classified as Balance Board"
+        )
+        try expect(
             WiimoteMotionPlusCapability(
                 identifier: [0x00, 0x00, 0xA4, 0x20, 0x00, 0x05],
                 remoteKind: .standard
@@ -238,6 +242,18 @@ struct CoreTests {
                 remoteKind: .standard
             ) == .activeNunchukPassthrough,
             "MotionPlus Nunchuk passthrough ID should be recognized"
+        )
+        try expect(
+            WiimoteExtensionKind(identifier: [0x01, 0x00, 0xA6, 0x20, 0x04, 0x05]) == .motionPlusActive,
+            "Wiiuse no-longer-active MotionPlus ID should be recognized"
+        )
+        try expect(
+            WiimoteExtensionKind(identifier: [0x01, 0x00, 0xA6, 0x20, 0x05, 0x05]) == .motionPlusNunchukPassthrough,
+            "Wiiuse no-longer-active MotionPlus Nunchuk ID should be recognized"
+        )
+        try expect(
+            WiimoteExtensionKind(identifier: [0x01, 0x00, 0xA6, 0x20, 0x07, 0x05]) == .motionPlusClassicPassthrough,
+            "Wiiuse no-longer-active MotionPlus Classic ID should be recognized"
         )
         try expect(
             WiimoteExtensionKind(identifier: [0x00, 0x00, 0xA4, 0x20, 0x01, 0x11]) == .tatacon,
