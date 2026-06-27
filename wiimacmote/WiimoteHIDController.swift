@@ -695,7 +695,7 @@ final class WiimoteHIDController {
 
         sendOutputReports(WiimoteOutputReports.extensionInitializationSequence(), to: session, interval: 0.05)
 
-        queue.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self, weak session] in
+        queue.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self, weak session] in
             guard let self, let session, self.sessions[session.id] != nil else { return }
             self.sendReadMemory(
                 for: session,
@@ -868,7 +868,7 @@ final class WiimoteHIDController {
                 session.extensionIdentifierRetryCount += 1
                 session.extensionInitializationRequested = false
                 log("⚠", "P\(session.playerIndex) extension identifier was not stable; retrying handshake.")
-                queue.asyncAfter(deadline: .now() + .milliseconds(250)) { [weak self, weak session] in
+                queue.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self, weak session] in
                     guard let self, let session, self.sessions[session.id] === session else { return }
                     self.initializeExtension(for: session)
                 }
