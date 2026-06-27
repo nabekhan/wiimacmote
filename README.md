@@ -1,5 +1,7 @@
 # WiiMacMote
 
+![Screenshot](screenshot.png "Screenshot")
+
 - macOS app for Nintendo Wii Remotes.
 - Pairs with the red SYNC button.
 - Reads buttons, battery, LEDs, rumble, accelerometer, IR, MotionPlus, and common extensions.
