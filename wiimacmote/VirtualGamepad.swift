@@ -31,14 +31,14 @@ enum VirtualGamepadCreationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .restrictedEntitlementMissing:
-            return "This process does not carry com.apple.developer.hid.virtual.device. Build and ad-hoc sign the Local AMFI Lab scheme before enabling virtual output."
+            return "This process does not carry com.apple.developer.hid.virtual.device. Virtual output is available in the app, but macOS will reject it until the app is signed with that entitlement and allowed by the current security policy."
         case .backendUnavailable(let backend, let reason):
             return "\(backend.rawValue) is unavailable: \(reason)"
         case .deviceCreationFailed(let backend, let identity, let entitlementVisible):
             if entitlementVisible {
                 return "\(backend.rawValue) could not create the \(identity.shortTitle) device even though the restricted virtual-HID entitlement is visible. Check the Developer Lab preflight output, AMFI state, and the macOS unified log."
             }
-            return "\(backend.rawValue) could not create the \(identity.shortTitle) device, and the running task does not expose \(DeveloperLabEnvironment.virtualHIDEntitlement). Build and ad-hoc sign with the Developer Lab scripts before testing on an AMFI-relaxed Mac."
+            return "\(backend.rawValue) could not create the \(identity.shortTitle) device, and the running task does not expose \(DeveloperLabEnvironment.virtualHIDEntitlement). Sign with that entitlement before testing on an AMFI-relaxed Mac."
         case .initialReportFailed(let backend, let code):
             return "\(backend.rawValue) created the device but rejected its first report (\(Self.hex(code)))."
         case .allBackendsFailed(let failures):

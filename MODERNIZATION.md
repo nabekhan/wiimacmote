@@ -2,9 +2,11 @@
 
 ## Physical Wii Remote path
 
-A Wii Remote is a Bluetooth Classic HID device. Red-SYNC pairing uses a six-byte binary PIN derived from the host Bluetooth address, so ordinary text-PIN APIs are insufficient. The pairing workaround remains isolated in `WiimotePairingBridge.m`, checks private selectors before calling them, and uses bounded retries rather than restarting `bluetoothd` or looping indefinitely.
+A Wii Remote is a Bluetooth Classic HID device. Red-SYNC pairing uses a six-byte binary PIN derived from the host Bluetooth address, so ordinary text-PIN APIs are insufficient. WiiMacMote uses the same macOS pairing shape as Dolphin's WiimotePair: Classic Bluetooth inquiry, `IOBluetoothDevicePair`, a forced PIN delegate callback, and the private CoreBluetooth coordinator to submit the raw binary PIN. After pairing, runtime input/output remains user-space HID.
 
-The HID layer uses one dispatch-backed `IOHIDManager`, installs callbacks before activation, retains callback lifetime through asynchronous cancellation, and publishes immutable UI snapshots at a limited rate. Report parsing and mapping remain independent from IOKit so they can be tested on any Swift host.
+The HID layer uses one dispatch-backed `IOHIDManager`, installs callbacks before activation, retains callback lifetime through asynchronous cancellation, and publishes immutable UI snapshots at a limited rate. Report parsing, memory/register report builders, extension decoders, and mapping remain independent from IOKit so they can be tested on any Swift host.
+
+Disconnect is intentionally a quiet-and-close sequence rather than a fake power command. The Wii Remote protocol documents host shutdown as closing the L2CAP/HID connection; WiiMacMote first mutes/disables speaker output, disables IR, clears LEDs, and forces rumble off before closing HID and the Classic Bluetooth connection.
 
 Useful references:
 
@@ -39,12 +41,9 @@ For a Wii Remote, there are two different meanings of “best”:
 
 Switch Pro is the practical middle ground: Nintendo identity and layout, but a conventional full gamepad. The 2.0.5 implementation exposes simple input report `0x3F`; full recognition may require Nintendo's initialization/subcommand flow and report `0x30`, which is future work.
 
-The Xbox implementation uses Series VID/PID `045E:0B13` rather than blindly claiming the Model 1708 `045E:02FD` profile described in an unverified snippet. WaveBird documents its Series descriptor as a real-device dump and reports successful use in current macOS Game Controller, SDL, Steam, Dolphin, and web clients. WiiMacMote still labels it experimental and provides no universal compatibility promise.
+The Xbox implementation uses Series VID/PID `045E:0B13` rather than blindly claiming the Model 1708 `045E:02FD` profile described in an unverified snippet. WiiMacMote still labels it experimental and provides no universal compatibility promise.
 
-Reference and attribution:
-
-- https://github.com/murphyjt/wavebird
-- `THIRD_PARTY_NOTICES.md`
+Attribution is listed in `THIRD_PARTY_NOTICES.md`.
 
 ## 2.0.5 architecture
 
@@ -52,7 +51,9 @@ Reference and attribution:
 
 The backend interface deliberately distinguishes synchronous IOKit publication from asynchronous CoreHID dispatch. Both send an initial neutral state, deduplicate unchanged state, and attempt a neutral report before cancellation.
 
-The Xcode project weak-links CoreHID and guards all CoreHID use by SDK import and runtime availability. The Standard and Developer Lab schemes share source but not entitlements. `DeveloperLabEnvironment` checks the entitlement visible to the running task and reports whether the commonly used AMFI laboratory boot-argument token is present; the direct-launch script preserves terminal-visible launch failures.
+The SwiftUI shell now follows macOS System Settings structure: a sidebar for controller, Bluetooth, output, saved-device, and diagnostic panes; grouped rows for settings; and original vector silhouettes for Wii Remote hardware instead of external image assets.
+
+The Xcode project weak-links CoreHID and guards all CoreHID use by SDK import and runtime availability. The Standard and Developer Lab schemes share source but not entitlements, so virtual-output controls are available in both builds and fail cleanly when signing or host policy rejects publication. `DeveloperLabEnvironment` checks the entitlement visible to the running task and reports whether the commonly used AMFI laboratory boot-argument token is present; the direct-launch script preserves terminal-visible launch failures.
 
 ## Remaining high-value work
 
@@ -60,6 +61,6 @@ The Xcode project weak-links CoreHID and guards all CoreHID use by SDK import an
 2. Add an in-app IORegistry/raw-HID/GCController diagnostic ladder.
 3. Implement the full Switch Pro session handshake and output reports.
 4. Add optional DualShock 4 or DualSense identities only after verifying descriptors and report behavior on current macOS.
-5. Decode Nunchuk, Classic Controller, MotionPlus, and IR input as independent modules.
-6. Read per-device accelerometer calibration instead of using approximate center/span values.
+5. Add explicit user controls for optional IR and speaker enablement instead of keeping those builders internal.
+6. Feed EEPROM accelerometer calibration into the live motion filter instead of only loading/logging it.
 7. Collect evidence for an Apple entitlement request and file Game Controller feedback.

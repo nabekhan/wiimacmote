@@ -6,6 +6,7 @@ struct ConnectedWiimoteSnapshot: Identifiable, Equatable {
     let id: UInt64
     let playerIndex: Int
     let name: String
+    let address: String?
     let productID: Int
     let batteryPercent: Int?
     let buttons: [String]
@@ -13,6 +14,10 @@ struct ConnectedWiimoteSnapshot: Identifiable, Equatable {
     let reportsPerSecond: Int
     let reportID: UInt8?
     let extensionConnected: Bool
+    let extensionName: String?
+    let extensionDetail: String?
+    let irPointCount: Int
+    let balanceWeightKilograms: Double?
     let virtualGamepadActive: Bool
     let virtualGamepadIdentity: String?
     let virtualGamepadBackend: String?
@@ -145,7 +150,14 @@ final class WiimoteHIDController {
         queue.async { [weak self] in
             guard let self, let session = self.sessions[id] else { return }
             session.motionFilter.calibrate(using: session.acceleration)
-            self.log("🎯", "Calibrated motion center for P\(session.playerIndex).")
+            self.log("", "Calibrated motion center for P\(session.playerIndex).")
+        }
+    }
+
+    func disconnect(id: UInt64) {
+        queue.async { [weak self] in
+            guard let self, let session = self.sessions[id] else { return }
+            self.quietAndClose(session, reason: "P\(session.playerIndex) disconnect requested.")
         }
     }
 
@@ -227,7 +239,7 @@ final class WiimoteHIDController {
 
         let openResult = IOHIDManagerOpen(created, IOOptionBits(kIOHIDOptionsTypeNone))
         guard openResult == kIOReturnSuccess else {
-            log("❌", "Unable to open IOHIDManager (\(hex(openResult))).")
+            log("", "Unable to open IOHIDManager (\(hex(openResult))).")
             callbackContext.owner = nil
             self.callbackContext = nil
             manager = nil
@@ -245,7 +257,7 @@ final class WiimoteHIDController {
         }
         IOHIDManagerActivate(created)
         startTimers()
-        log("👀", "HID service is ready on its dedicated dispatch queue.")
+        log("", "HID service is ready on its dedicated dispatch queue.")
     }
 
     private func tearDown() {
@@ -262,6 +274,7 @@ final class WiimoteHIDController {
         // Input reports and device access are owned by the manager. Avoid any
         // per-device close or callback mutation while a device may be vanishing.
         for session in sessions.values {
+            quietRemote(for: session)
             session.virtualGamepad?.reset()
         }
         sessions.removeAll()
@@ -304,27 +317,30 @@ final class WiimoteHIDController {
         let id = deviceIdentifier(device)
         guard sessions[id] == nil else { return }
         guard sessions.count < 4 else {
-            log("⚠️", "Ignoring an additional Wii Remote because four are already active.")
+            log("", "Ignoring an additional Wii Remote because four are already active.")
             return
         }
 
         let name = stringProperty(device, key: kIOHIDProductKey) ?? "Nintendo Wii Remote"
-        if name.localizedCaseInsensitiveContains("RVL-WBC") {
-            log("⚠️", "A Wii Balance Board was detected, but balance data is not implemented yet.")
-            return
-        }
-
         let playerIndex = firstAvailablePlayerIndex()
         let session = Session(
             id: id,
             device: device,
             playerIndex: playerIndex,
             name: name,
+            address: stringProperty(device, key: kIOHIDSerialNumberKey),
             productID: intProperty(device, key: kIOHIDProductIDKey) ?? 0
         )
+        if name.localizedCaseInsensitiveContains("RVL-WBC") {
+            session.extensionKind = .balanceBoard
+            session.extensionConnected = true
+        }
         sessions[id] = session
 
         configureVirtualGamepad(for: session)
+        if session.extensionKind == .balanceBoard {
+            initializeExtension(for: session)
+        }
         sendLEDState(for: session)
         setReportMode(for: session)
 
@@ -335,19 +351,34 @@ final class WiimoteHIDController {
             self.sendStatusRequest(for: session)
         }
 
-        log("✅", "Connected \(name) as P\(playerIndex).")
+        queue.asyncAfter(deadline: .now() + .milliseconds(350)) { [weak self, weak session] in
+            guard let self, let session, self.sessions[session.id] != nil else { return }
+            self.sendReadMemory(
+                for: session,
+                kind: .accelerometerCalibration,
+                addressSpace: .eeprom,
+                address: 0x00_00_16,
+                length: 10
+            )
+        }
+
+        log("", "Connected \(name) as P\(playerIndex).")
         publishConnectionChanges()
     }
 
     private func deviceRemoved(_ device: IOHIDDevice) {
         let id = deviceIdentifier(device)
+        removeSession(id: id, reason: nil)
+    }
+
+    private func removeSession(id: UInt64, reason: String?) {
         guard let session = sessions.removeValue(forKey: id) else { return }
         session.virtualGamepad?.reset()
 
         // The manager owns report delivery. Its callbacks are serialized on
         // this queue, so no session-owned callback buffer needs a drain period.
 
-        log("🔌", "P\(session.playerIndex) disconnected.")
+        log("", reason ?? "P\(session.playerIndex) disconnected.")
         publishConnectionChanges()
     }
 
@@ -368,7 +399,7 @@ final class WiimoteHIDController {
         length: CFIndex
     ) {
         guard result == kIOReturnSuccess else {
-            log("⚠️", "HID input callback returned \(hex(result)).")
+            log("", "HID input callback returned \(hex(result)).")
             return
         }
         guard length > 0, let session = sessions[deviceIdentifier(device)] else { return }
@@ -391,6 +422,14 @@ final class WiimoteHIDController {
             session.buttons = input.buttons
             session.acceleration = input.acceleration
             session.lastReportID = input.reportID
+            session.irPointCount = input.irPoints.count
+            if !input.extensionData.isEmpty {
+                session.extensionConnected = true
+                session.extensionInput = WiimoteExtensionInput.decode(
+                    input.extensionData,
+                    kind: session.extensionKind
+                )
+            }
             updateVirtualOutput(for: session)
             markSnapshotsDirty()
 
@@ -407,15 +446,32 @@ final class WiimoteHIDController {
             // A spontaneous extension connect/disconnect status disables data
             // reporting on the Wii Remote. Restore the selected report mode.
             if extensionStateChanged {
+                if status.extensionConnected {
+                    initializeExtension(for: session)
+                } else {
+                    session.extensionKind = nil
+                    session.extensionInput = nil
+                    session.balanceBoardCalibration = nil
+                    session.extensionInitializationRequested = false
+                    session.pendingRead = nil
+                }
                 setReportMode(for: session)
-                log("ℹ️", "P\(session.playerIndex) extension state changed; report mode restored.")
+                log("ℹ", "P\(session.playerIndex) extension state changed; report mode restored.")
+            } else if status.extensionConnected,
+                      session.extensionKind == nil ||
+                      (session.extensionKind == .balanceBoard && session.balanceBoardCalibration == nil) {
+                initializeExtension(for: session)
             }
+            markSnapshotsDirty()
+
+        case .readData(let read):
+            handleReadData(read, for: session)
             markSnapshotsDirty()
 
         case .acknowledgment(let acknowledgedReport, let error):
             if error != 0 {
                 log(
-                    "⚠️",
+                    "",
                     String(format: "P%d rejected output report 0x%02X with error 0x%02X.",
                            session.playerIndex, acknowledgedReport, error)
                 )
@@ -459,12 +515,12 @@ final class WiimoteHIDController {
                 session.virtualGamepad = gamepad
                 session.virtualGamepadError = nil
                 log(
-                    "🎮",
+                    "",
                     "P\(session.playerIndex) virtual output: \(gamepad.identity.shortTitle) via \(gamepad.backendKind.rawValue)."
                 )
             } catch {
                 session.virtualGamepadError = error.localizedDescription
-                log("❌", "Virtual output failed for P\(session.playerIndex): \(error.localizedDescription)")
+                log("", "Virtual output failed for P\(session.playerIndex): \(error.localizedDescription)")
             }
         } else {
             session.virtualGamepad?.reset()
@@ -476,26 +532,169 @@ final class WiimoteHIDController {
     // MARK: - Output reports
 
     private func setReportMode(for session: Session) {
-        let mode: UInt8 = settings.motionRightStickEnabled ? 0x31 : 0x30
+        let mode: WiimoteReportMode
+        if session.extensionKind == .balanceBoard {
+            mode = .buttonsExtension19
+        } else if session.extensionConnected || session.extensionKind != nil {
+            mode = settings.motionRightStickEnabled ? .buttonsAccelerometerExtension16 : .buttonsExtension8
+        } else {
+            mode = settings.motionRightStickEnabled ? .buttonsAccelerometer : .buttons
+        }
+
         sendOutputReport(
-            to: session,
-            reportID: 0x12,
-            payload: [session.rumbleEnabled ? 0x05 : 0x04, mode]
+            WiimoteOutputReports.reportMode(mode, continuous: true, rumble: session.rumbleEnabled),
+            to: session
         )
     }
 
     private func sendStatusRequest(for session: Session) {
-        sendOutputReport(
-            to: session,
-            reportID: 0x15,
-            payload: [session.rumbleEnabled ? 0x01 : 0x00]
-        )
+        sendOutputReport(WiimoteOutputReports.statusRequest(rumble: session.rumbleEnabled), to: session)
     }
 
     private func sendLEDState(for session: Session) {
         let ledMask = UInt8(0x10 << (session.playerIndex - 1))
-        let value = ledMask | (session.rumbleEnabled ? 0x01 : 0x00)
-        sendOutputReport(to: session, reportID: 0x11, payload: [value])
+        sendOutputReport(WiimoteOutputReports.leds(mask: ledMask, rumble: session.rumbleEnabled), to: session)
+    }
+
+    private func initializeExtension(for session: Session) {
+        guard !session.extensionInitializationRequested else { return }
+        session.extensionInitializationRequested = true
+
+        for report in WiimoteOutputReports.extensionInitializationSequence() {
+            sendOutputReport(report, to: session)
+        }
+
+        queue.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self, weak session] in
+            guard let self, let session, self.sessions[session.id] != nil else { return }
+            self.sendReadMemory(
+                for: session,
+                kind: .extensionIdentifier,
+                addressSpace: .register,
+                address: 0xA4_00_FA,
+                length: 6
+            )
+        }
+    }
+
+    private func sendReadMemory(
+        for session: Session,
+        kind: PendingReadKind,
+        addressSpace: WiimoteAddressSpace,
+        address: UInt32,
+        length: UInt16
+    ) {
+        guard session.pendingRead == nil else {
+            queue.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self, weak session] in
+                guard let self, let session, self.sessions[session.id] != nil else { return }
+                self.sendReadMemory(
+                    for: session,
+                    kind: kind,
+                    addressSpace: addressSpace,
+                    address: address,
+                    length: length
+                )
+            }
+            return
+        }
+
+        guard let report = WiimoteOutputReports.readMemory(
+            addressSpace: addressSpace,
+            address: address,
+            length: length,
+            rumble: session.rumbleEnabled
+        ) else { return }
+
+        session.pendingRead = PendingRead(
+            kind: kind,
+            address: address,
+            length: Int(length),
+            data: []
+        )
+        sendOutputReport(report, to: session)
+    }
+
+    private func handleReadData(_ read: WiimoteReadData, for session: Session) {
+        guard var pending = session.pendingRead else { return }
+        if read.error != 0 {
+            log(
+                "⚠",
+                String(format: "P%d memory read at 0x%06X failed with error 0x%02X.",
+                       session.playerIndex, pending.address, read.error)
+            )
+            session.pendingRead = nil
+            return
+        }
+
+        pending.data.append(contentsOf: read.data)
+        session.pendingRead = pending
+        guard pending.data.count >= pending.length else { return }
+
+        let data = Array(pending.data.prefix(pending.length))
+        session.pendingRead = nil
+
+        switch pending.kind {
+        case .accelerometerCalibration:
+            if let calibration = WiimoteAccelerometerCalibration(bytes: data) {
+                session.accelerometerCalibration = calibration
+                log(
+                    calibration.checksumValid ? "✅" : "⚠",
+                    "P\(session.playerIndex) accelerometer EEPROM calibration loaded."
+                )
+            }
+
+        case .extensionIdentifier:
+            let kind = WiimoteExtensionKind(identifier: Array(data.prefix(6)))
+            session.extensionKind = kind
+            log("🧩", "P\(session.playerIndex) detected \(kind.displayName).")
+            setReportMode(for: session)
+            if kind == .balanceBoard {
+                sendReadMemory(
+                    for: session,
+                    kind: .balanceBoardCalibration,
+                    addressSpace: .register,
+                    address: 0xA4_00_20,
+                    length: 32
+                )
+            }
+
+        case .balanceBoardCalibration:
+            if let calibration = WiimoteBalanceBoardCalibration(bytes: data) {
+                session.balanceBoardCalibration = calibration
+                log("✅", "P\(session.playerIndex) Balance Board calibration loaded.")
+            }
+        }
+    }
+
+    private func quietAndClose(_ session: Session, reason: String) {
+        quietRemote(for: session)
+        session.virtualGamepad?.reset()
+
+        queue.asyncAfter(deadline: .now() + .milliseconds(150)) { [weak self, weak session] in
+            guard let self, let session, self.sessions[session.id] != nil else { return }
+            let result = IOHIDDeviceClose(session.device, IOOptionBits(kIOHIDOptionsTypeNone))
+            if result != kIOReturnSuccess {
+                self.log("⚠", "P\(session.playerIndex) HID close returned \(self.hex(result)).")
+            }
+            self.removeSession(id: session.id, reason: reason)
+        }
+    }
+
+    private func quietRemote(for session: Session) {
+        session.rumbleEnabled = false
+
+        // There is no public Wii Remote power-off report. The closest safe
+        // shutdown sequence is to stop speaker/IR output, blank LEDs, and force
+        // rumble off before closing the Bluetooth HID connection.
+        sendOutputReport(to: session, reportID: 0x19, payload: [0x04])
+        sendOutputReport(to: session, reportID: 0x14, payload: [0x00])
+        sendOutputReport(to: session, reportID: 0x13, payload: [0x00])
+        sendOutputReport(to: session, reportID: 0x1A, payload: [0x00])
+        sendOutputReport(to: session, reportID: 0x11, payload: [0x00])
+        sendOutputReport(to: session, reportID: 0x10, payload: [0x00])
+    }
+
+    private func sendOutputReport(_ report: WiimoteOutputReport, to session: Session) {
+        sendOutputReport(to: session, reportID: report.reportID, payload: report.payload)
     }
 
     private func sendOutputReport(
@@ -523,7 +722,7 @@ final class WiimoteHIDController {
 
         if result != kIOReturnSuccess {
             log(
-                "⚠️",
+                "",
                 String(format: "P%d output report 0x%02X failed (%@).",
                        session.playerIndex, reportID, hex(result))
             )
@@ -552,6 +751,7 @@ final class WiimoteHIDController {
                     id: session.id,
                     playerIndex: session.playerIndex,
                     name: session.name,
+                    address: session.address,
                     productID: session.productID,
                     batteryPercent: session.batteryPercent,
                     buttons: session.buttons.labels,
@@ -559,6 +759,10 @@ final class WiimoteHIDController {
                     reportsPerSecond: session.reportsPerSecond,
                     reportID: session.lastReportID,
                     extensionConnected: session.extensionConnected,
+                    extensionName: session.extensionKind?.displayName,
+                    extensionDetail: session.extensionDetail,
+                    irPointCount: session.irPointCount,
+                    balanceWeightKilograms: session.balanceWeightKilograms,
                     virtualGamepadActive: session.virtualGamepad != nil,
                     virtualGamepadIdentity: session.virtualGamepad?.identity.shortTitle,
                     virtualGamepadBackend: session.virtualGamepad?.backendKind.rawValue,
@@ -606,11 +810,25 @@ final class WiimoteHIDController {
     }
 }
 
+private enum PendingReadKind {
+    case accelerometerCalibration
+    case extensionIdentifier
+    case balanceBoardCalibration
+}
+
+private struct PendingRead {
+    let kind: PendingReadKind
+    let address: UInt32
+    let length: Int
+    var data: [UInt8]
+}
+
 private final class Session {
     let id: UInt64
     let device: IOHIDDevice
     let playerIndex: Int
     let name: String
+    let address: String?
     let productID: Int
     let motionFilter = MotionStickFilter()
 
@@ -624,19 +842,41 @@ private final class Session {
     var lastReportID: UInt8?
     var hasReceivedStatus = false
     var extensionConnected = false
+    var extensionKind: WiimoteExtensionKind?
+    var extensionInput: WiimoteExtensionInput?
+    var extensionInitializationRequested = false
+    var accelerometerCalibration: WiimoteAccelerometerCalibration?
+    var balanceBoardCalibration: WiimoteBalanceBoardCalibration?
+    var pendingRead: PendingRead?
+    var irPointCount = 0
     var rumbleEnabled = false
+
+    var extensionDetail: String? {
+        extensionInput?.summary
+    }
+
+    var balanceWeightKilograms: Double? {
+        guard case .balanceBoard(let input) = extensionInput,
+              let calibration = balanceBoardCalibration
+        else {
+            return nil
+        }
+        return calibration.weight(for: input).totalKilograms
+    }
 
     init(
         id: UInt64,
         device: IOHIDDevice,
         playerIndex: Int,
         name: String,
+        address: String?,
         productID: Int
     ) {
         self.id = id
         self.device = device
         self.playerIndex = playerIndex
         self.name = name
+        self.address = address
         self.productID = productID
     }
 }

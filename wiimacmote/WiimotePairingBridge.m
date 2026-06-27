@@ -1,14 +1,137 @@
 #import "WiimotePairingBridge.h"
 
+#import <CoreBluetooth/CoreBluetooth.h>
 #import <IOKit/IOReturn.h>
 #import <mach/mach_error.h>
-#import <string.h>
-
-#import <CoreBluetooth/CoreBluetooth.h>
 #import <objc/message.h>
+#import <string.h>
 
 @interface IOBluetoothDevice (WiiMacMotePrivate)
 - (id)classicPeer;
+@end
+
+static NSString *WMNormalizedBluetoothAddress(NSString *address) {
+    if (address.length == 0) {
+        return @"";
+    }
+
+    NSMutableString *normalized = [NSMutableString stringWithCapacity:address.length];
+    NSCharacterSet *hexCharacters = [NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefABCDEF"];
+    for (NSUInteger index = 0; index < address.length; index++) {
+        unichar character = [address characterAtIndex:index];
+        if ([hexCharacters characterIsMember:character]) {
+            [normalized appendFormat:@"%C", character];
+        }
+    }
+    return normalized.uppercaseString;
+}
+
+static BOOL WMPairedDevicesContainAddress(NSString *address) {
+    NSString *target = WMNormalizedBluetoothAddress(address);
+    if (target.length == 0) {
+        return NO;
+    }
+
+    NSArray *devices = [IOBluetoothDevice pairedDevices];
+    for (IOBluetoothDevice *pairedDevice in devices) {
+        NSString *pairedAddress = WMNormalizedBluetoothAddress(pairedDevice.addressString);
+        if ([pairedAddress isEqualToString:target]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void WMCompleteRemovalAfterVerification(NSString *address,
+                                               NSString *method,
+                                               WMDeviceRemovalCompletion completion) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (address.length > 0 && !WMPairedDevicesContainAddress(address)) {
+            completion(kIOReturnSuccess, method);
+            return;
+        }
+
+        NSString *detail = method.length > 0
+            ? [NSString stringWithFormat:@"%@ did not remove the pairing.", method]
+            : @"The pairing still appears in macOS paired devices.";
+        completion(kIOReturnError, detail);
+    });
+}
+
+@implementation WMDeviceRemovalBridge
+
++ (void)removePairingForDevice:(IOBluetoothDevice *)device
+                     completion:(WMDeviceRemovalCompletion)completion {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (device == nil) {
+            completion(kIOReturnBadArgument, @"Bluetooth device is unavailable.");
+            return;
+        }
+
+        NSString *address = device.addressString ?: @"";
+        if (address.length > 0 && !WMPairedDevicesContainAddress(address)) {
+            completion(kIOReturnSuccess, @"already absent from paired devices");
+            return;
+        }
+
+        if ([device isConnected]) {
+            [device closeConnection];
+        }
+
+        [device removeFromFavorites];
+
+        NSArray<NSString *> *deviceSelectors = @[
+            @"remove",
+            @"unpair",
+            @"removePairing",
+            @"removeFromPairedDevices"
+        ];
+        for (NSString *selectorName in deviceSelectors) {
+            SEL selector = NSSelectorFromString(selectorName);
+            if ([device respondsToSelector:selector]) {
+                typedef void (*SendRemoveMessage)(id, SEL);
+                ((SendRemoveMessage)objc_msgSend)(device, selector);
+                WMCompleteRemovalAfterVerification(address, selectorName, completion);
+                return;
+            }
+        }
+
+        Class coordinatorClass = NSClassFromString(@"IOBluetoothCoreBluetoothCoordinator");
+        SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
+        if (coordinatorClass != Nil &&
+            [coordinatorClass respondsToSelector:sharedSelector] &&
+            [device respondsToSelector:@selector(classicPeer)]) {
+            typedef id (*SendIdMessage)(id, SEL);
+            typedef void (*SendPeerMessage)(id, SEL, id);
+            id coordinator = ((SendIdMessage)objc_msgSend)((id)coordinatorClass, sharedSelector);
+            id peer = [device classicPeer];
+            NSArray<NSString *> *coordinatorSelectors = @[
+                @"unpairPeer:",
+                @"removePeer:",
+                @"forgetPeer:"
+            ];
+            for (NSString *selectorName in coordinatorSelectors) {
+                SEL selector = NSSelectorFromString(selectorName);
+                if (coordinator != nil && peer != nil && [coordinator respondsToSelector:selector]) {
+                    ((SendPeerMessage)objc_msgSend)(coordinator, selector, peer);
+                    WMCompleteRemovalAfterVerification(address, selectorName, completion);
+                    return;
+                }
+            }
+        }
+
+        if (address.length > 0 && !WMPairedDevicesContainAddress(address)) {
+            completion(kIOReturnSuccess, @"paired-device list update");
+            return;
+        }
+
+        completion(
+            kIOReturnUnsupported,
+            @"macOS did not expose an IOBluetooth/CoreBluetooth unpair selector for this device."
+        );
+    });
+}
+
 @end
 
 @interface IOBluetoothDevicePair (WiiMacMotePrivate)

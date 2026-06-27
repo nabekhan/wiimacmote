@@ -4,7 +4,7 @@
 
 This target exists so a developer can prototype virtual gamepad output **before** receiving Apple authorization for `com.apple.developer.hid.virtual.device`.
 
-The implementation does not depend on WaveBird's code-signing identity, team, provisioning profile, or entitlement approval. WaveBird remains a protocol and behavior reference only. The local pipeline is:
+The implementation does not depend on another project's code-signing identity, team, provisioning profile, or entitlement approval. The local pipeline is:
 
 1. Build the app without code signing.
 2. Apply an ad-hoc signature (`codesign --sign -`) containing the restricted virtual-HID entitlement.

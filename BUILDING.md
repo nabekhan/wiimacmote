@@ -6,26 +6,34 @@ Use macOS with Xcode 16 or newer. Xcode 26 is recommended for current macOS; the
 
 ## Standard configuration
 
-The Standard configuration targets macOS 14+, keeps Hardened Runtime enabled, and omits the restricted virtual-HID entitlement.
+The Standard configuration targets macOS 14+, keeps Hardened Runtime enabled, and omits the restricted virtual-HID entitlement. It still exposes the same virtual-output UI path so entitlement/signing failures are visible and non-fatal.
 
 In Xcode, open `WiiMacMote.xcodeproj`, select **WiiMacMote**, choose **My Mac**, and build. No development team is stored in the project.
 
-Portable and unsigned command-line validation:
+Portable command-line validation and local ad-hoc build signing:
 
 ```sh
 ./Scripts/verify-source.sh
 ./Scripts/build.sh
 ```
 
-`build.sh` creates an unsigned Release product under `build/DerivedData` and is intended for compile verification. A universal signed archive can be created after configuring a signing identity:
+`build.sh` compiles with Xcode signing disabled, then applies a local ad-hoc signature to the Release product under `build/DerivedData`. A universal signed archive can be created after configuring a signing identity:
 
 ```sh
 ./Scripts/archive-universal.sh
 ```
 
+If a locally copied ad-hoc app in `/Applications` can open CoreBluetooth but Classic inquiry returns `kIOReturnNotPermitted`, refresh the local signature before launching it again:
+
+```sh
+./Scripts/build.sh --sign-installed
+```
+
+That flag runs `codesign --force --deep --sign - /Applications/WiiMacMote.app` after the local build. Use it only for local testing; release artifacts should be signed through the normal archive/notarization path.
+
 ## Local AMFI Lab configuration
 
-The **WiiMacMote Developer Lab** scheme uses the `DeveloperLab` build configuration. It adds the virtual-HID entitlement, disables Hardened Runtime for the lab product, uses a separate bundle identifier, and defines `DEVELOPER_LAB`.
+The **WiiMacMote Developer Lab** scheme uses the `DeveloperLab` build configuration. It adds the virtual-HID entitlement, disables Hardened Runtime for the lab product, uses a separate bundle identifier, and defines `DEVELOPER_LAB` for the local-lab warning. The source path is otherwise shared with Standard.
 
 The deterministic command-line path intentionally separates compilation from signing:
 
@@ -59,7 +67,7 @@ An ad-hoc signature is not Apple authorization for a restricted entitlement. Thi
 | App Sandbox | Off | Off |
 | Bluetooth entitlement | Yes | Yes |
 | Virtual-HID entitlement | No | Yes |
-| Signing | Xcode/local or unsigned script | Unsigned Xcode build, then explicit ad-hoc `codesign -` |
+| Signing | Xcode/local or build script ad-hoc `codesign -` | Unsigned Xcode build, then explicit ad-hoc `codesign -` |
 
 CoreHID is weak-linked so the app can still launch on macOS 14. The source is compiled conditionally when the selected SDK contains CoreHID, and every call is guarded by a macOS 15 availability check.
 
@@ -70,6 +78,7 @@ CoreHID is weak-linked so the app can still launch on macOS 14. The source is co
 3. DeveloperLab builds without an Apple team, is explicitly ad-hoc signed, and its signature contains `com.apple.developer.hid.virtual.device`.
 4. The Standard signature does not contain that entitlement.
 5. Physical Wii Remote pairing, buttons, battery, LEDs, rumble, and motion work with virtual output disabled.
-6. Each virtual identity is tested separately through IORegistry/raw HID, Game Controller, System Settings, Steam/SDL, Dolphin, and one target game.
-7. Disabling or changing a profile sends a neutral report and removes the prior virtual device.
-8. Apple silicon and Intel results are recorded separately.
+6. The Scan toggle resumes after canceled macOS Bluetooth Connection Request prompts and after benign Classic inquiry completions.
+7. Each virtual identity is tested separately through IORegistry/raw HID, Game Controller, System Settings, Steam/SDL, Dolphin, and one target game.
+8. Disabling or changing a profile sends a neutral report and removes the prior virtual device.
+9. Apple silicon and Intel results are recorded separately.

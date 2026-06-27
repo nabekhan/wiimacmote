@@ -5,10 +5,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 typedef void (^WMPairingLogHandler)(NSString *message);
 typedef void (^WMPairingCompletion)(IOReturn result, NSString * _Nullable detail);
+typedef void (^WMDeviceRemovalCompletion)(IOReturn result, NSString * _Nullable detail);
 
-/// Isolates the private IOBluetooth selectors currently required to send a Wii
-/// Remote's six-byte binary PIN. Every selector is checked at runtime so a
-/// future macOS change fails cleanly instead of crashing the Swift application.
+/// Isolates the private IOBluetooth selectors required to send a Wii Remote's
+/// six-byte binary PIN. Selectors are checked at runtime so macOS changes fail
+/// cleanly instead of crashing the Swift application.
 @interface WMPairingBridge : NSObject <IOBluetoothDevicePairDelegate>
 
 @property (nonatomic, strong, readonly) IOBluetoothDevice *device;
@@ -21,6 +22,13 @@ typedef void (^WMPairingCompletion)(IOReturn result, NSString * _Nullable detail
 
 - (IOReturn)start;
 - (void)cancel;
+
+@end
+
+@interface WMDeviceRemovalBridge : NSObject
+
++ (void)removePairingForDevice:(IOBluetoothDevice *)device
+                     completion:(WMDeviceRemovalCompletion)completion;
 
 @end
 

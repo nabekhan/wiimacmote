@@ -26,4 +26,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Protocol and architecture references
 
-The project also uses public documentation and independent behavior references from Dolphin, xwiimote, hidapi, SDL, Nintendo controller reverse-engineering projects, and Apple documentation. These references are listed in `MODERNIZATION.md`; no dependency on their binaries is introduced by WiiMacMote.
+The project also uses public documentation and independent behavior references from Dolphin, xwiimote, WiiBrew, hidapi, SDL, Nintendo controller reverse-engineering projects, and Apple documentation. These references are listed in `MODERNIZATION.md`; no dependency on their binaries is introduced by WiiMacMote.
+
+Wii Remote memory/register, IR, speaker, extension, MotionPlus, and Balance Board packet layouts were implemented from public protocol descriptions in xwiimote's `doc/PROTOCOL` and WiiBrew's Wiimote/extension technical pages. WiiMacMote contains its own Swift parsers/builders rather than copied source from those projects.

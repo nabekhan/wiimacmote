@@ -3,21 +3,29 @@ import Combine
 import CoreBluetooth
 import Foundation
 import IOBluetooth
+import Security
 
 final class DiagnosticLog: ObservableObject {
     struct Entry: Identifiable, Equatable {
         let id = UUID()
         let time: Date
-        let icon: String
+        let level: String
+        let symbolName: String
         let message: String
     }
 
     @Published private(set) var entries: [Entry] = []
 
     func append(_ icon: String, _ message: String) {
+        let presentation = Self.presentation(for: icon)
         let work = { [weak self] in
             guard let self else { return }
-            self.entries.append(Entry(time: Date(), icon: icon, message: message))
+            self.entries.append(Entry(
+                time: Date(),
+                level: presentation.level,
+                symbolName: presentation.symbolName,
+                message: message
+            ))
             if self.entries.count > 500 {
                 self.entries.removeFirst(self.entries.count - 500)
             }
@@ -28,7 +36,7 @@ final class DiagnosticLog: ObservableObject {
         } else {
             DispatchQueue.main.async(execute: work)
         }
-        print("\(icon) \(message)")
+        print("[\(presentation.level)] \(message)")
     }
 
     func clear() {
@@ -42,8 +50,24 @@ final class DiagnosticLog: ObservableObject {
     var plainText: String {
         let formatter = ISO8601DateFormatter()
         return entries
-            .map { "\(formatter.string(from: $0.time)) \($0.icon) \($0.message)" }
+            .map { "\(formatter.string(from: $0.time)) [\($0.level)] \($0.message)" }
             .joined(separator: "\n")
+    }
+
+    private static func presentation(for marker: String) -> (level: String, symbolName: String) {
+        switch marker {
+        case "❌": return ("Error", "xmark.circle.fill")
+        case "⚠️", "⚠": return ("Warning", "exclamationmark.triangle.fill")
+        case "✅": return ("Success", "checkmark.circle.fill")
+        case "🔍", "👀": return ("Discovery", "dot.radiowaves.left.and.right")
+        case "🔐", "🔑": return ("Pairing", "link.circle.fill")
+        case "🗑": return ("Removal", "trash.circle.fill")
+        case "🔏": return ("Signing", "signature")
+        case "🚀": return ("App", "app.badge")
+        case "🧩": return ("Extension", "puzzlepiece.extension.fill")
+        case "ℹ️", "ℹ": return ("Info", "info.circle.fill")
+        default: return ("Info", "circle.fill")
+        }
     }
 }
 
@@ -80,10 +104,18 @@ enum WiimoteAppPhase: Equatable {
     }
 }
 
+struct SavedWiimoteSnapshot: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let address: String
+    let isConnected: Bool
+}
+
 final class WiimoteManager: NSObject, ObservableObject {
     @Published private(set) var phase: WiimoteAppPhase = .starting
     @Published private(set) var isScanning = false
     @Published private(set) var wiimotes: [ConnectedWiimoteSnapshot] = []
+    @Published private(set) var savedWiimotes: [SavedWiimoteSnapshot] = []
 
     @Published var automaticScanning: Bool {
         didSet {
@@ -156,19 +188,19 @@ final class WiimoteManager: NSObject, ObservableObject {
     private var connectionCooldowns: [String: Date] = [:]
     private var retryWorkItem: DispatchWorkItem?
     private var hidWaitWorkItem: DispatchWorkItem?
+    private var inquiryStopReason: String?
+    private var suppressInquiryCompletionUntil: Date?
     private var hasStarted = false
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.automaticScanning = defaults.object(forKey: Keys.automaticScanning) as? Bool ?? true
         self.virtualGamepadEnabled = defaults.object(forKey: Keys.virtualGamepadEnabled) as? Bool ?? false
-        let defaultVirtualIdentity: VirtualGamepadIdentity =
-            WiiMacMoteBuildFlavor.isDeveloperLab ? .xboxSeries : .generic
+        let defaultVirtualIdentity: VirtualGamepadIdentity = .generic
         self.virtualGamepadIdentity = VirtualGamepadIdentity(
             rawValue: defaults.string(forKey: Keys.virtualGamepadIdentity) ?? ""
         ) ?? defaultVirtualIdentity
-        let defaultVirtualBackend: VirtualGamepadBackendPreference =
-            WiiMacMoteBuildFlavor.isDeveloperLab ? .ioHIDUserDevice : .automatic
+        let defaultVirtualBackend: VirtualGamepadBackendPreference = .automatic
         self.virtualGamepadBackendPreference = VirtualGamepadBackendPreference(
             rawValue: defaults.string(forKey: Keys.virtualGamepadBackendPreference) ?? ""
         ) ?? defaultVirtualBackend
@@ -182,7 +214,7 @@ final class WiimoteManager: NSObject, ObservableObject {
 
     deinit {
         cancelPairingWork()
-        inquiry?.stop()
+        stopInquiry(reason: "manager teardown")
         centralManager?.delegate = nil
         hidController.stop()
     }
@@ -192,23 +224,23 @@ final class WiimoteManager: NSObject, ObservableObject {
         hasStarted = true
 
         hidController.start()
+        refreshSavedWiimotes()
         diagnostics.append(
             "🚀",
             "WiiMacMote 2.0.5 (\(WiiMacMoteBuildFlavor.title)) initialized."
         )
+        diagnostics.append("ℹ️", bluetoothRuntimeSummary())
 
-        if WiiMacMoteBuildFlavor.isDeveloperLab {
-            let environment = DeveloperLabEnvironment.snapshot()
-            diagnostics.append(
-                environment.virtualHIDEntitlementVisible ? "✅" : "❌",
-                environment.entitlementSummary
-            )
-            diagnostics.append("🔏", environment.signingSummary)
-            diagnostics.append(
-                environment.amfiRelaxationHintDetected ? "⚠️" : "ℹ️",
-                environment.amfiSummary
-            )
-        }
+        let environment = DeveloperLabEnvironment.snapshot()
+        diagnostics.append(
+            environment.virtualHIDEntitlementVisible ? "✅" : "ℹ️",
+            environment.entitlementSummary
+        )
+        diagnostics.append("🔏", environment.signingSummary)
+        diagnostics.append(
+            environment.amfiRelaxationHintDetected ? "⚠️" : "ℹ️",
+            environment.amfiSummary
+        )
 
         centralManager = CBCentralManager(
             delegate: self,
@@ -222,7 +254,17 @@ final class WiimoteManager: NSObject, ObservableObject {
             start()
             return
         }
-        guard centralManager?.state == .poweredOn else { return }
+        guard let state = centralManager?.state else {
+            diagnostics.append("ℹ️", "Bluetooth permission probe has not started yet.")
+            return
+        }
+        guard state == .poweredOn else {
+            diagnostics.append("ℹ️", "Scan requested while CoreBluetooth state is \(bluetoothStateName(state)).")
+            if automaticScanning {
+                resumeScanning(after: 1)
+            }
+            return
+        }
         guard pairingBridge == nil, activePairingToken == nil else { return }
         guard retryWorkItem == nil, hidWaitWorkItem == nil else { return }
         guard wiimotes.count < 4 else { return }
@@ -238,11 +280,20 @@ final class WiimoteManager: NSObject, ObservableObject {
             self.inquiry = inquiry
         }
 
+        inquiryStopReason = nil
+        if let deadline = suppressInquiryCompletionUntil, deadline <= Date() {
+            suppressInquiryCompletionUntil = nil
+        }
         inquiry.clearFoundDevices()
         let result = inquiry.start()
         guard result == kIOReturnSuccess else {
             phase = .error("Bluetooth scan could not start (\(hex(result))).")
             diagnostics.append("❌", "Classic Bluetooth inquiry failed to start: \(hex(result)).")
+            diagnostics.append("ℹ️", bluetoothRuntimeSummary(inquiryResult: result))
+            resetInquiryIfNeeded(inquiry)
+            if automaticScanning {
+                resumeScanning(after: 0.75)
+            }
             return
         }
 
@@ -250,14 +301,100 @@ final class WiimoteManager: NSObject, ObservableObject {
         if wiimotes.isEmpty {
             phase = .scanning
         }
-        diagnostics.append("🔍", "Classic Bluetooth inquiry started. Press the red SYNC button.")
+        diagnostics.append("🔍", "Classic Bluetooth inquiry started. Press the red SYNC button; cancel macOS Connection Request prompts from other buttons.")
     }
 
     func stopScanning() {
-        inquiry?.stop()
+        stopInquiry(reason: "manual stop")
         isScanning = false
-        if wiimotes.isEmpty, pairingBridge == nil {
+        if wiimotes.isEmpty {
             phase = .idle
+        }
+    }
+
+    func connectSavedWiimote(address: String) {
+        guard let device = IOBluetoothDevice(addressString: address) else {
+            diagnostics.append("", "Saved remote \(address) is no longer available to Bluetooth.")
+            refreshSavedWiimotes()
+            return
+        }
+
+        if !device.isConnected() {
+            let result = device.openConnection()
+            if result != kIOReturnSuccess {
+                diagnostics.append("", "Open connection returned \(hex(result)) for \(address).")
+            }
+        }
+
+        phase = .waitingForHID(name: device.name ?? "Wii Remote")
+        scheduleHIDWaitTimeout(name: device.name ?? "Wii Remote")
+        refreshSavedWiimotes()
+    }
+
+    func disconnectWiimote(id: UInt64) {
+        if let address = wiimotes.first(where: { $0.id == id })?.address {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.disconnectSavedWiimote(address: address)
+            }
+        }
+        hidController.disconnect(id: id)
+    }
+
+    func disconnectSavedWiimote(address: String) {
+        guard let device = IOBluetoothDevice(addressString: address) else {
+            diagnostics.append("", "Saved remote \(address) is no longer available to Bluetooth.")
+            refreshSavedWiimotes()
+            return
+        }
+
+        if device.isConnected() {
+            let result = device.closeConnection()
+            if result != kIOReturnSuccess {
+                diagnostics.append("", "Disconnect returned \(hex(result)) for \(address).")
+            } else {
+                diagnostics.append("", "Disconnect requested for \(device.name ?? address).")
+            }
+        }
+        refreshSavedWiimotes()
+    }
+
+    func removeSavedWiimote(address: String) {
+        guard let device = IOBluetoothDevice(addressString: address) else {
+            diagnostics.append("⚠️", "Saved remote \(address) is no longer available to Bluetooth.")
+            refreshSavedWiimotes()
+            return
+        }
+
+        let name = device.name ?? address
+        stopInquiry(reason: "removing saved remote")
+        cancelPairingWork()
+        if device.isConnected() {
+            let closeResult = device.closeConnection()
+            if closeResult != kIOReturnSuccess {
+                diagnostics.append("⚠️", "Disconnect before removal returned \(hex(closeResult)) for \(name).")
+            }
+        }
+
+        diagnostics.append("🗑", "Removing \(name) from macOS Bluetooth saved devices.")
+        WMDeviceRemovalBridge.removePairing(for: device) { [weak self] result, detail in
+            guard let self else { return }
+            if result == kIOReturnSuccess {
+                self.connectionCooldowns[address] = nil
+                self.pairingCooldowns[address] = nil
+                self.pairingAttempts[address] = nil
+                let method = detail?.isEmpty == false ? " via \(detail!)" : ""
+                self.diagnostics.append("✅", "Removed \(name) from macOS Bluetooth saved devices\(method).")
+            } else {
+                let explanation = detail?.isEmpty == false ? detail! : self.machErrorDescription(result)
+                self.diagnostics.append(
+                    "❌",
+                    "Could not remove \(name) from macOS Bluetooth saved devices: \(self.hex(result)) \(explanation)"
+                )
+            }
+            self.refreshSavedWiimotes()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+                self?.refreshSavedWiimotes()
+            }
         }
     }
 
@@ -321,6 +458,7 @@ final class WiimoteManager: NSObject, ObservableObject {
         }
         hidController.onSnapshotsChanged = { [weak self] snapshots in
             self?.wiimotes = snapshots
+            self?.refreshSavedWiimotes()
         }
         hidController.onConnectionCountChanged = { [weak self] count in
             self?.handleConnectionCountChanged(count)
@@ -331,21 +469,44 @@ final class WiimoteManager: NSObject, ObservableObject {
         if count > 0 {
             phase = .connected(count: count)
             cancelPairingWork()
+            refreshSavedWiimotes()
 
             if automaticScanning, count < 4 {
                 resumeScanning(after: 1.0)
             }
         } else if automaticScanning {
             phase = .scanning
+            refreshSavedWiimotes()
             resumeScanning(after: 0.5)
         } else {
             phase = .idle
+            refreshSavedWiimotes()
         }
     }
 
     private func isSupportedWiimoteName(_ name: String) -> Bool {
         let normalized = name.uppercased()
-        return normalized.contains("NINTENDO RVL-CNT-01") || normalized == "WIIMOTE"
+        return normalized.contains("NINTENDO RVL-CNT-01") ||
+            normalized.contains("NINTENDO RVL-WBC") ||
+            normalized == "WIIMOTE"
+    }
+
+    private func refreshSavedWiimotes() {
+        let devices = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
+        let connectedAddresses = Set(wiimotes.compactMap(\.address))
+
+        savedWiimotes = devices.compactMap { device in
+            guard let name = device.name, isSupportedWiimoteName(name), let address = device.addressString else {
+                return nil
+            }
+            return SavedWiimoteSnapshot(
+                id: address,
+                name: name,
+                address: address,
+                isConnected: device.isConnected() || connectedAddresses.contains(address)
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private func handleDiscoveredDevice(_ device: IOBluetoothDevice) {
@@ -360,7 +521,7 @@ final class WiimoteManager: NSObject, ObservableObject {
                 return
             }
             connectionCooldowns[address] = now.addingTimeInterval(5)
-            inquiry?.stop()
+            stopInquiry(reason: "paired remote found")
             isScanning = false
             diagnostics.append("ℹ️", "The remote is already paired; requesting a HID connection.")
             if !device.isConnected() {
@@ -371,6 +532,7 @@ final class WiimoteManager: NSObject, ObservableObject {
             }
             phase = .waitingForHID(name: name)
             scheduleHIDWaitTimeout(name: name)
+            refreshSavedWiimotes()
             return
         }
 
@@ -386,7 +548,7 @@ final class WiimoteManager: NSObject, ObservableObject {
         name: String,
         address: String
     ) {
-        inquiry?.stop()
+        stopInquiry(reason: "pairing started")
         isScanning = false
         retryWorkItem?.cancel()
         retryWorkItem = nil
@@ -457,6 +619,7 @@ final class WiimoteManager: NSObject, ObservableObject {
                 }
             }
             scheduleHIDWaitTimeout(name: name)
+            refreshSavedWiimotes()
             return
         }
 
@@ -477,8 +640,6 @@ final class WiimoteManager: NSObject, ObservableObject {
             retryWorkItem = retry
             DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: retry)
         } else {
-            // Avoid the old infinite loop: two failures trigger a long cooldown
-            // and return to discovery instead of hammering the pairing daemon.
             retryWorkItem = nil
             pairingAttempts[address] = nil
             pairingCooldowns[address] = Date().addingTimeInterval(30)
@@ -506,8 +667,8 @@ final class WiimoteManager: NSObject, ObservableObject {
             guard self.wiimotes.count == countBefore else { return }
             self.phase = .error("\(name) paired, but its HID connection did not appear.")
             self.diagnostics.append(
-                "⚠️",
-                "Pairing completed without a HID match. Press SYNC again or remove the stale Bluetooth pairing."
+                "",
+                "Pairing completed without a HID match. Press red SYNC again, and cancel any macOS Connection Request created by other buttons."
             )
             self.resumeScanning(after: 1)
         }
@@ -522,18 +683,87 @@ final class WiimoteManager: NSObject, ObservableObject {
         }
     }
 
+    private func stopInquiry(reason: String) {
+        guard let inquiry else { return }
+        inquiryStopReason = reason
+        suppressInquiryCompletionUntil = Date().addingTimeInterval(0.75)
+        inquiry.stop()
+    }
+
+    private func resetInquiryIfNeeded(_ completedInquiry: IOBluetoothDeviceInquiry) {
+        if inquiry === completedInquiry {
+            inquiry = nil
+            isScanning = false
+        }
+    }
+
+    private func bluetoothRuntimeSummary(inquiryResult: IOReturn? = nil) -> String {
+        let bundleID = Bundle.main.bundleIdentifier ?? "unknown bundle"
+        let executable = Bundle.main.executablePath ?? "unknown executable"
+        let entitlement = booleanEntitlement("com.apple.security.device.bluetooth") ? "present" : "missing"
+        let coreBluetooth = centralManager.map { bluetoothStateName($0.state) } ?? "not created"
+
+        var parts = [
+            "bundle=\(bundleID)",
+            "executable=\(executable)",
+            "bluetooth entitlement=\(entitlement)",
+            "CoreBluetooth=\(coreBluetooth)"
+        ]
+
+        if let inquiryResult {
+            parts.append("Classic inquiry=\(hex(inquiryResult)) \(machErrorDescription(inquiryResult))")
+            if inquiryResult == kIOReturnNotPermitted {
+                parts.append("CoreBluetooth is authorized but Classic inquiry was denied; suspect macOS TCC/signature policy for this exact app build rather than Wii protocol parsing. For local ad-hoc installs, quit and re-sign the exact app bundle before launching again, for example: codesign --force --deep --sign - /Applications/WiiMacMote.app")
+            }
+        }
+
+        return parts.joined(separator: " | ")
+    }
+
+    private func booleanEntitlement(_ entitlement: String) -> Bool {
+        guard let task = SecTaskCreateFromSelf(kCFAllocatorDefault),
+              let value = SecTaskCopyValueForEntitlement(task, entitlement as CFString, nil)
+        else {
+            return false
+        }
+
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        return false
+    }
+
+    private func bluetoothStateName(_ state: CBManagerState) -> String {
+        switch state {
+        case .unknown: return "unknown"
+        case .resetting: return "resetting"
+        case .unsupported: return "unsupported"
+        case .unauthorized: return "unauthorized"
+        case .poweredOff: return "powered off"
+        case .poweredOn: return "powered on"
+        @unknown default: return "future state"
+        }
+    }
+
+    private func machErrorDescription(_ value: IOReturn) -> String {
+        guard let message = mach_error_string(value) else { return "" }
+        return String(cString: message)
+    }
+
     private func hex(_ value: IOReturn) -> String {
         String(format: "0x%08X", UInt32(bitPattern: value))
     }
 }
-
-// MARK: - CoreBluetooth permission/power gate
 
 extension WiimoteManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
             diagnostics.append("✅", "Bluetooth is powered on and permission is available.")
+            diagnostics.append("ℹ️", bluetoothRuntimeSummary())
             if automaticScanning {
                 startScanning()
             } else {
@@ -551,6 +781,7 @@ extension WiimoteManager: CBCentralManagerDelegate {
             cancelPairingWork()
             phase = .permissionDenied
             diagnostics.append("❌", "Bluetooth permission was denied in Privacy & Security.")
+            diagnostics.append("ℹ️", bluetoothRuntimeSummary())
 
         case .unsupported:
             stopScanning()
@@ -572,36 +803,50 @@ extension WiimoteManager: CBCentralManagerDelegate {
     }
 }
 
-// MARK: - Classic Bluetooth inquiry
-
 extension WiimoteManager: IOBluetoothDeviceInquiryDelegate {
     func deviceInquiryStarted(_ sender: IOBluetoothDeviceInquiry!) {
         isScanning = true
     }
 
-    func deviceInquiryDeviceFound(
-        _ sender: IOBluetoothDeviceInquiry!,
-        device: IOBluetoothDevice!
-    ) {
+    func deviceInquiryDeviceFound(_ sender: IOBluetoothDeviceInquiry!, device: IOBluetoothDevice!) {
         guard let device else { return }
         handleDiscoveredDevice(device)
     }
 
-    func deviceInquiryComplete(
-        _ sender: IOBluetoothDeviceInquiry!,
-        error: IOReturn,
-        aborted: Bool
-    ) {
+    func deviceInquiryComplete(_ sender: IOBluetoothDeviceInquiry!, error: IOReturn, aborted: Bool) {
+        let now = Date()
+        let stopReason = inquiryStopReason
+        inquiryStopReason = nil
+        let wasRecentlyStopped = suppressInquiryCompletionUntil.map { $0 > now } ?? false
+        if let deadline = suppressInquiryCompletionUntil, deadline <= now {
+            suppressInquiryCompletionUntil = nil
+        }
         isScanning = false
 
-        if error != kIOReturnSuccess, !aborted {
+        // Some macOS Classic Bluetooth paths report KERN_INVALID_ADDRESS (0x1)
+        // for empty or interrupted inquiry completion even though discovery can continue.
+        let benignInvalidAddressCompletion = error == IOReturn(1)
+        if error != kIOReturnSuccess,
+           !aborted,
+           stopReason == nil,
+           !wasRecentlyStopped,
+           !benignInvalidAddressCompletion {
             diagnostics.append("⚠️", "Bluetooth inquiry completed with \(hex(error)).")
+            diagnostics.append("ℹ️", bluetoothRuntimeSummary(inquiryResult: error))
         }
 
-        guard !aborted, automaticScanning, pairingBridge == nil, wiimotes.count < 4 else {
+        if stopReason == nil, (aborted || error != kIOReturnSuccess) {
+            resetInquiryIfNeeded(sender)
+        }
+
+        guard stopReason == nil,
+              automaticScanning,
+              pairingBridge == nil,
+              wiimotes.count < 4 else {
             return
         }
         sender.clearFoundDevices()
-        resumeScanning(after: 1)
+        let resumeDelay: TimeInterval = aborted || wasRecentlyStopped ? 0.75 : 1
+        resumeScanning(after: resumeDelay)
     }
 }

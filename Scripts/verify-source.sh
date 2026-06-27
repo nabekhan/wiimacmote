@@ -124,9 +124,14 @@ for script in Scripts/*.sh; do
   sh -n "$script"
 done
 
+SEARCH_PATHS="wiimacmote WiiMacMote.xcodeproj Scripts"
+if [ -d .github ]; then
+  SEARCH_PATHS="$SEARCH_PATHS .github"
+fi
+
 if grep -R --line-number --exclude='verify-source.sh' \
   -E 'pkill[[:space:]]+bluetoothd|0x028E|DEVELOPMENT_TEAM[[:space:]]*=' \
-  wiimacmote WiiMacMote.xcodeproj Scripts .github; then
+  $SEARCH_PATHS; then
   echo "Found a removed privileged action, legacy Xbox 360 spoof ID, or hard-coded signing team." >&2
   exit 1
 fi

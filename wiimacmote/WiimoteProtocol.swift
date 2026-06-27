@@ -54,7 +54,12 @@ struct WiimoteInput: Equatable, Sendable {
     let reportID: UInt8
     let buttons: WiimoteButtons
     let acceleration: WiimoteAcceleration?
+    let irData: [UInt8]
     let extensionData: [UInt8]
+
+    var irPoints: [WiimoteIRPoint] {
+        WiimoteIRPoint.parse(irData)
+    }
 }
 
 struct WiimoteStatus: Equatable, Sendable {
@@ -67,9 +72,245 @@ struct WiimoteStatus: Equatable, Sendable {
     let ledMask: UInt8
 }
 
+struct WiimoteReadData: Equatable, Sendable {
+    let buttons: WiimoteButtons
+    let size: Int
+    let error: UInt8
+    let offsetLow: UInt16
+    let data: [UInt8]
+}
+
+struct WiimoteOutputReport: Equatable, Sendable {
+    let reportID: UInt8
+    let payload: [UInt8]
+}
+
+enum WiimoteAddressSpace: Equatable, Sendable {
+    case eeprom
+    case register
+}
+
+enum WiimoteReportMode: UInt8, Sendable {
+    case buttons = 0x30
+    case buttonsAccelerometer = 0x31
+    case buttonsExtension8 = 0x32
+    case buttonsAccelerometerIR12 = 0x33
+    case buttonsExtension19 = 0x34
+    case buttonsAccelerometerExtension16 = 0x35
+    case buttonsIR10Extension9 = 0x36
+    case buttonsAccelerometerIR10Extension6 = 0x37
+    case extension21 = 0x3D
+    case interleavedIR1 = 0x3E
+    case interleavedIR2 = 0x3F
+}
+
+enum WiimoteOutputReports {
+    static func rumble(enabled: Bool) -> WiimoteOutputReport {
+        WiimoteOutputReport(reportID: 0x10, payload: [enabled ? 0x01 : 0x00])
+    }
+
+    static func leds(mask: UInt8, rumble: Bool) -> WiimoteOutputReport {
+        WiimoteOutputReport(reportID: 0x11, payload: [(mask & 0xF0) | (rumble ? 0x01 : 0x00)])
+    }
+
+    static func reportMode(
+        _ mode: WiimoteReportMode,
+        continuous: Bool = true,
+        rumble: Bool = false
+    ) -> WiimoteOutputReport {
+        var flags: UInt8 = continuous ? 0x04 : 0x00
+        if rumble { flags |= 0x01 }
+        return WiimoteOutputReport(reportID: 0x12, payload: [flags, mode.rawValue])
+    }
+
+    static func irEnabled(_ enabled: Bool, second: Bool = false, rumble: Bool = false) -> WiimoteOutputReport {
+        var flags: UInt8 = enabled ? 0x04 : 0x00
+        if rumble { flags |= 0x01 }
+        return WiimoteOutputReport(reportID: second ? 0x1A : 0x13, payload: [flags])
+    }
+
+    static func speakerEnabled(_ enabled: Bool, rumble: Bool = false) -> WiimoteOutputReport {
+        var flags: UInt8 = enabled ? 0x04 : 0x00
+        if rumble { flags |= 0x01 }
+        return WiimoteOutputReport(reportID: 0x14, payload: [flags])
+    }
+
+    static func statusRequest(rumble: Bool = false) -> WiimoteOutputReport {
+        WiimoteOutputReport(reportID: 0x15, payload: [rumble ? 0x01 : 0x00])
+    }
+
+    static func writeMemory(
+        addressSpace: WiimoteAddressSpace,
+        address: UInt32,
+        bytes: [UInt8],
+        rumble: Bool = false
+    ) -> WiimoteOutputReport? {
+        guard (1...16).contains(bytes.count), address <= 0xFF_FFFF else { return nil }
+        var flags: UInt8 = addressSpace == .register ? 0x04 : 0x00
+        if rumble { flags |= 0x01 }
+
+        var payload: [UInt8] = [
+            flags,
+            UInt8((address >> 16) & 0xFF),
+            UInt8((address >> 8) & 0xFF),
+            UInt8(address & 0xFF),
+            UInt8(bytes.count)
+        ]
+        payload.append(contentsOf: bytes)
+        payload.append(contentsOf: repeatElement(0, count: 16 - bytes.count))
+        return WiimoteOutputReport(reportID: 0x16, payload: payload)
+    }
+
+    static func readMemory(
+        addressSpace: WiimoteAddressSpace,
+        address: UInt32,
+        length: UInt16,
+        rumble: Bool = false
+    ) -> WiimoteOutputReport? {
+        guard length > 0, address <= 0xFF_FFFF else { return nil }
+        var flags: UInt8 = addressSpace == .register ? 0x04 : 0x00
+        if rumble { flags |= 0x01 }
+        return WiimoteOutputReport(
+            reportID: 0x17,
+            payload: [
+                flags,
+                UInt8((address >> 16) & 0xFF),
+                UInt8((address >> 8) & 0xFF),
+                UInt8(address & 0xFF),
+                UInt8((length >> 8) & 0xFF),
+                UInt8(length & 0xFF)
+            ]
+        )
+    }
+
+    static func speakerData(_ data: [UInt8], rumble: Bool = false) -> WiimoteOutputReport? {
+        guard data.count <= 20 else { return nil }
+        var flags = UInt8(data.count << 3)
+        if rumble { flags |= 0x01 }
+        var payload = [flags]
+        payload.append(contentsOf: data)
+        payload.append(contentsOf: repeatElement(0, count: 20 - data.count))
+        return WiimoteOutputReport(reportID: 0x18, payload: payload)
+    }
+
+    static func speakerMuted(_ muted: Bool, rumble: Bool = false) -> WiimoteOutputReport {
+        var flags: UInt8 = muted ? 0x04 : 0x00
+        if rumble { flags |= 0x01 }
+        return WiimoteOutputReport(reportID: 0x19, payload: [flags])
+    }
+
+    static func extensionInitializationSequence() -> [WiimoteOutputReport] {
+        [
+            writeMemory(addressSpace: .register, address: 0xA4_00_F0, bytes: [0x55]),
+            writeMemory(addressSpace: .register, address: 0xA4_00_FB, bytes: [0x00])
+        ].compactMap { $0 }
+    }
+
+    static func readExtensionIdentifier() -> WiimoteOutputReport? {
+        readMemory(addressSpace: .register, address: 0xA4_00_FA, length: 6)
+    }
+
+    static func readAccelerometerCalibration() -> WiimoteOutputReport? {
+        readMemory(addressSpace: .eeprom, address: 0x00_00_16, length: 10)
+    }
+
+    static func readBalanceBoardCalibration() -> WiimoteOutputReport? {
+        readMemory(addressSpace: .register, address: 0xA4_00_20, length: 32)
+    }
+
+    static func speakerInitializationSequence() -> [WiimoteOutputReport] {
+        [
+            speakerEnabled(true),
+            speakerMuted(true),
+            writeMemory(addressSpace: .register, address: 0xA2_00_09, bytes: [0x01]),
+            writeMemory(addressSpace: .register, address: 0xA2_00_01, bytes: [0x08]),
+            writeMemory(addressSpace: .register, address: 0xA2_00_01, bytes: [0x00, 0x00, 0xD0, 0x07, 0x40, 0x00, 0x00]),
+            writeMemory(addressSpace: .register, address: 0xA2_00_08, bytes: [0x01]),
+            speakerMuted(false)
+        ].compactMap { $0 }
+    }
+
+    static func irInitializationSequence(mode: WiimoteIRMode = .extended) -> [WiimoteOutputReport] {
+        [
+            irEnabled(true),
+            irEnabled(true, second: true),
+            writeMemory(addressSpace: .register, address: 0xB0_00_30, bytes: [0x08]),
+            writeMemory(addressSpace: .register, address: 0xB0_00_00, bytes: WiimoteIRSensitivity.block1),
+            writeMemory(addressSpace: .register, address: 0xB0_00_1A, bytes: WiimoteIRSensitivity.block2),
+            writeMemory(addressSpace: .register, address: 0xB0_00_33, bytes: [mode.rawValue]),
+            writeMemory(addressSpace: .register, address: 0xB0_00_30, bytes: [0x08])
+        ].compactMap { $0 }
+    }
+}
+
+enum WiimoteIRMode: UInt8, Sendable {
+    case basic = 0x01
+    case extended = 0x03
+    case full = 0x05
+}
+
+enum WiimoteIRSensitivity {
+    static let block1: [UInt8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0x00, 0x41]
+    static let block2: [UInt8] = [0x40, 0x00]
+}
+
+struct WiimoteIRPoint: Equatable, Sendable {
+    let x: UInt16
+    let y: UInt16
+    let size: UInt8?
+
+    static func parse(_ data: [UInt8]) -> [WiimoteIRPoint] {
+        switch data.count {
+        case 10:
+            return parseBasic(data)
+        case 12:
+            return stride(from: 0, to: 12, by: 3).compactMap { parseExtended(Array(data[$0..<($0 + 3)])) }
+        default:
+            return []
+        }
+    }
+
+    private static func parseBasic(_ data: [UInt8]) -> [WiimoteIRPoint] {
+        guard data.count >= 10 else { return [] }
+        return [
+            parseBasicPair(data, offset: 0).0,
+            parseBasicPair(data, offset: 0).1,
+            parseBasicPair(data, offset: 5).0,
+            parseBasicPair(data, offset: 5).1
+        ].compactMap { $0 }
+    }
+
+    private static func parseBasicPair(
+        _ data: [UInt8],
+        offset: Int
+    ) -> (WiimoteIRPoint?, WiimoteIRPoint?) {
+        let x1 = UInt16(data[offset]) | (UInt16((data[offset + 4] >> 4) & 0x03) << 8)
+        let y1 = UInt16(data[offset + 1]) | (UInt16((data[offset + 4] >> 6) & 0x03) << 8)
+        let x2 = UInt16(data[offset + 2]) | (UInt16(data[offset + 4] & 0x03) << 8)
+        let y2 = UInt16(data[offset + 3]) | (UInt16((data[offset + 4] >> 2) & 0x03) << 8)
+        return (
+            pointIfVisible(x: x1, y: y1, size: nil),
+            pointIfVisible(x: x2, y: y2, size: nil)
+        )
+    }
+
+    private static func parseExtended(_ data: [UInt8]) -> WiimoteIRPoint? {
+        guard data.count == 3 else { return nil }
+        let x = UInt16(data[0]) | (UInt16((data[2] >> 4) & 0x03) << 8)
+        let y = UInt16(data[1]) | (UInt16((data[2] >> 6) & 0x03) << 8)
+        return pointIfVisible(x: x, y: y, size: data[2] & 0x0F)
+    }
+
+    private static func pointIfVisible(x: UInt16, y: UInt16, size: UInt8?) -> WiimoteIRPoint? {
+        guard x != 0x03FF || y != 0x03FF else { return nil }
+        return WiimoteIRPoint(x: x, y: y, size: size)
+    }
+}
+
 enum WiimotePacket: Equatable, Sendable {
     case input(WiimoteInput)
     case status(WiimoteStatus)
+    case readData(WiimoteReadData)
     case acknowledgment(reportID: UInt8, error: UInt8)
     case ignored(reportID: UInt8)
 }
@@ -84,11 +325,14 @@ enum WiimoteReportParser {
         case 0x20:
             return parseStatus(bytes)
 
+        case 0x21:
+            return parseReadData(bytes)
+
         case 0x22:
             guard bytes.count >= 5 else { return nil }
             return .acknowledgment(reportID: bytes[3], error: bytes[4])
 
-        case 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x3D:
+        case 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x3D, 0x3E, 0x3F:
             return parseInput(bytes, reportID: reportID)
 
         default:
@@ -128,6 +372,24 @@ enum WiimoteReportParser {
         )
     }
 
+    private static func parseReadData(_ bytes: UnsafeBufferPointer<UInt8>) -> WiimotePacket? {
+        guard bytes.count >= 22 else { return nil }
+        let sizeAndError = bytes[3]
+        let size = Int(sizeAndError >> 4) + 1
+        guard (1...16).contains(size) else { return nil }
+        let data = Array(bytes[6..<(6 + size)])
+
+        return .readData(
+            WiimoteReadData(
+                buttons: parseButtons(bytes, firstButtonIndex: 1),
+                size: size,
+                error: sizeAndError & 0x0F,
+                offsetLow: (UInt16(bytes[4]) << 8) | UInt16(bytes[5]),
+                data: data
+            )
+        )
+    }
+
     private static func parseInput(
         _ bytes: UnsafeBufferPointer<UInt8>,
         reportID: UInt8
@@ -139,7 +401,21 @@ enum WiimoteReportParser {
                     reportID: reportID,
                     buttons: [],
                     acceleration: nil,
+                    irData: [],
                     extensionData: Array(bytes[1..<22])
+                )
+            )
+        }
+
+        if reportID == 0x3E || reportID == 0x3F {
+            guard bytes.count >= 22 else { return nil }
+            return .input(
+                WiimoteInput(
+                    reportID: reportID,
+                    buttons: parseButtons(bytes, firstButtonIndex: 1),
+                    acceleration: nil,
+                    irData: Array(bytes[4..<22]),
+                    extensionData: []
                 )
             )
         }
@@ -154,6 +430,14 @@ enum WiimoteReportParser {
             acceleration = parseAcceleration(bytes)
         default:
             acceleration = nil
+        }
+
+        let irRange: Range<Int>?
+        switch reportID {
+        case 0x33: irRange = 6..<18
+        case 0x36: irRange = 3..<13
+        case 0x37: irRange = 6..<16
+        default: irRange = nil
         }
 
         let extensionRange: Range<Int>?
@@ -174,11 +458,20 @@ enum WiimoteReportParser {
             extensionData = []
         }
 
+        let irData: [UInt8]
+        if let irRange {
+            guard bytes.count >= irRange.upperBound else { return nil }
+            irData = Array(bytes[irRange])
+        } else {
+            irData = []
+        }
+
         return .input(
             WiimoteInput(
                 reportID: reportID,
                 buttons: buttons,
                 acceleration: acceleration,
+                irData: irData,
                 extensionData: extensionData
             )
         )
@@ -203,6 +496,437 @@ enum WiimoteReportParser {
         let y = (UInt16(bytes[4]) << 2) | UInt16((bytes[2] >> 4) & 0x02)
         let z = (UInt16(bytes[5]) << 2) | UInt16((bytes[2] >> 5) & 0x02)
         return WiimoteAcceleration(rawX: x, rawY: y, rawZ: z)
+    }
+}
+
+struct WiimoteAccelerometerCalibration: Equatable, Sendable {
+    let zero: WiimoteAcceleration
+    let oneG: WiimoteAcceleration
+    let checksumValid: Bool
+
+    init?(bytes: [UInt8]) {
+        guard bytes.count >= 10 else { return nil }
+        self.zero = WiimoteAccelerometerCalibration.decodeAcceleration(
+            xHigh: bytes[0],
+            yHigh: bytes[1],
+            zHigh: bytes[2],
+            lowBits: bytes[3]
+        )
+        self.oneG = WiimoteAccelerometerCalibration.decodeAcceleration(
+            xHigh: bytes[4],
+            yHigh: bytes[5],
+            zHigh: bytes[6],
+            lowBits: bytes[7]
+        )
+        let checksum = bytes[0..<9].reduce(UInt8(0x55)) { partial, byte in
+            partial &+ byte
+        }
+        self.checksumValid = checksum == bytes[9]
+    }
+
+    func calibratedG(for acceleration: WiimoteAcceleration) -> (x: Double, y: Double, z: Double) {
+        (
+            axisG(raw: acceleration.rawX, zero: zero.rawX, oneG: oneG.rawX),
+            axisG(raw: acceleration.rawY, zero: zero.rawY, oneG: oneG.rawY),
+            axisG(raw: acceleration.rawZ, zero: zero.rawZ, oneG: oneG.rawZ)
+        )
+    }
+
+    private func axisG(raw: UInt16, zero: UInt16, oneG: UInt16) -> Double {
+        let span = max(1.0, Double(oneG) - Double(zero))
+        return (Double(raw) - Double(zero)) / span
+    }
+
+    private static func decodeAcceleration(
+        xHigh: UInt8,
+        yHigh: UInt8,
+        zHigh: UInt8,
+        lowBits: UInt8
+    ) -> WiimoteAcceleration {
+        WiimoteAcceleration(
+            rawX: (UInt16(xHigh) << 2) | UInt16((lowBits >> 4) & 0x03),
+            rawY: (UInt16(yHigh) << 2) | UInt16((lowBits >> 2) & 0x03),
+            rawZ: (UInt16(zHigh) << 2) | UInt16(lowBits & 0x03)
+        )
+    }
+}
+
+enum WiimoteExtensionKind: Equatable, Sendable {
+    case nunchuk
+    case classicController
+    case classicControllerPro
+    case balanceBoard
+    case motionPlusInactive
+    case motionPlusActive
+    case motionPlusNunchukPassthrough
+    case motionPlusClassicPassthrough
+    case guitar
+    case drums
+    case unknown(identifier: [UInt8])
+
+    init(identifier: [UInt8]) {
+        switch identifier {
+        case [0x00, 0x00, 0xA4, 0x20, 0x00, 0x00]: self = .nunchuk
+        case [0x00, 0x00, 0xA4, 0x20, 0x01, 0x01]: self = .classicController
+        case [0x01, 0x00, 0xA4, 0x20, 0x01, 0x01]: self = .classicControllerPro
+        case [0x00, 0x00, 0xA4, 0x20, 0x04, 0x02]: self = .balanceBoard
+        case [0x00, 0x00, 0xA4, 0x20, 0x00, 0x05],
+             [0x00, 0x00, 0xA6, 0x20, 0x00, 0x05],
+             [0x01, 0x00, 0xA6, 0x20, 0x00, 0x05]: self = .motionPlusInactive
+        case [0x00, 0x00, 0xA4, 0x20, 0x04, 0x05],
+             [0x00, 0x00, 0xA6, 0x20, 0x04, 0x05]: self = .motionPlusActive
+        case [0x00, 0x00, 0xA4, 0x20, 0x05, 0x05],
+             [0x00, 0x00, 0xA6, 0x20, 0x05, 0x05]: self = .motionPlusNunchukPassthrough
+        case [0x00, 0x00, 0xA4, 0x20, 0x07, 0x05],
+             [0x00, 0x00, 0xA6, 0x20, 0x07, 0x05]: self = .motionPlusClassicPassthrough
+        case [0x00, 0x00, 0xA4, 0x20, 0x01, 0x03]: self = .guitar
+        case [0x01, 0x00, 0xA4, 0x20, 0x01, 0x03]: self = .drums
+        default: self = .unknown(identifier: identifier)
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .nunchuk: return "Nunchuk"
+        case .classicController: return "Classic Controller"
+        case .classicControllerPro: return "Classic Controller Pro"
+        case .balanceBoard: return "Balance Board"
+        case .motionPlusInactive: return "MotionPlus inactive"
+        case .motionPlusActive: return "MotionPlus"
+        case .motionPlusNunchukPassthrough: return "MotionPlus + Nunchuk"
+        case .motionPlusClassicPassthrough: return "MotionPlus + Classic"
+        case .guitar: return "Guitar Controller"
+        case .drums: return "Drums Controller"
+        case .unknown: return "Unknown Extension"
+        }
+    }
+}
+
+enum WiimoteExtensionInput: Equatable, Sendable {
+    case nunchuk(WiimoteNunchukInput)
+    case classicController(WiimoteClassicControllerInput)
+    case motionPlus(WiimoteMotionPlusInput)
+    case balanceBoard(WiimoteBalanceBoardInput)
+    case raw(kind: WiimoteExtensionKind, bytes: [UInt8])
+
+    static func decode(_ bytes: [UInt8], kind: WiimoteExtensionKind?) -> WiimoteExtensionInput? {
+        guard !bytes.isEmpty else { return nil }
+        switch kind {
+        case .nunchuk:
+            return WiimoteNunchukInput(bytes: bytes).map { .nunchuk($0) }
+        case .classicController, .classicControllerPro:
+            return WiimoteClassicControllerInput(bytes: bytes).map { .classicController($0) }
+        case .motionPlusActive, .motionPlusInactive:
+            return WiimoteMotionPlusInput(bytes: bytes).map { .motionPlus($0) }
+        case .motionPlusNunchukPassthrough:
+            if WiimoteMotionPlusInput.isMotionPlusPacket(bytes) {
+                return WiimoteMotionPlusInput(bytes: bytes).map { .motionPlus($0) }
+            }
+            return WiimoteNunchukInput(passthroughBytes: bytes).map { .nunchuk($0) }
+        case .motionPlusClassicPassthrough:
+            if WiimoteMotionPlusInput.isMotionPlusPacket(bytes) {
+                return WiimoteMotionPlusInput(bytes: bytes).map { .motionPlus($0) }
+            }
+            return WiimoteClassicControllerInput(passthroughBytes: bytes).map { .classicController($0) }
+        case .balanceBoard:
+            return WiimoteBalanceBoardInput(bytes: bytes).map { .balanceBoard($0) }
+        case .guitar, .drums, .unknown:
+            return .raw(kind: kind ?? .unknown(identifier: []), bytes: bytes)
+        case .none:
+            return .raw(kind: .unknown(identifier: []), bytes: bytes)
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .nunchuk(let input):
+            let buttons = [input.cPressed ? "C" : nil, input.zPressed ? "Z" : nil]
+                .compactMap { $0 }
+                .joined(separator: "+")
+            return "Stick \(input.stickX),\(input.stickY)" + (buttons.isEmpty ? "" : " · \(buttons)")
+        case .classicController(let input):
+            return "LX \(input.leftX) LY \(input.leftY) · \(input.buttons.labels.joined(separator: "+"))"
+        case .motionPlus(let input):
+            return "Yaw \(input.yaw) Roll \(input.roll) Pitch \(input.pitch)"
+        case .balanceBoard(let input):
+            return "Raw weight \(input.sensors.total)"
+        case .raw(let kind, let bytes):
+            return "\(kind.displayName) · \(bytes.count) raw bytes"
+        }
+    }
+}
+
+struct WiimoteNunchukInput: Equatable, Sendable {
+    let stickX: UInt8
+    let stickY: UInt8
+    let acceleration: WiimoteAcceleration
+    let cPressed: Bool
+    let zPressed: Bool
+
+    init?(bytes: [UInt8]) {
+        guard bytes.count >= 6 else { return nil }
+        self.stickX = bytes[0]
+        self.stickY = bytes[1]
+        self.acceleration = WiimoteAcceleration(
+            rawX: (UInt16(bytes[2]) << 2) | UInt16((bytes[5] >> 2) & 0x03),
+            rawY: (UInt16(bytes[3]) << 2) | UInt16((bytes[5] >> 4) & 0x03),
+            rawZ: (UInt16(bytes[4]) << 2) | UInt16((bytes[5] >> 6) & 0x03)
+        )
+        self.cPressed = (bytes[5] & 0x02) == 0
+        self.zPressed = (bytes[5] & 0x01) == 0
+    }
+
+    init?(passthroughBytes bytes: [UInt8]) {
+        guard bytes.count >= 6 else { return nil }
+        self.stickX = bytes[0]
+        self.stickY = bytes[1]
+        self.acceleration = WiimoteAcceleration(
+            rawX: (UInt16(bytes[2]) << 2) | UInt16((bytes[5] >> 3) & 0x02),
+            rawY: (UInt16(bytes[3]) << 2) | UInt16((bytes[5] >> 4) & 0x02),
+            rawZ: (UInt16(bytes[4] & 0xFE) << 2) | UInt16((bytes[5] >> 5) & 0x06)
+        )
+        self.cPressed = (bytes[5] & 0x08) == 0
+        self.zPressed = (bytes[5] & 0x04) == 0
+    }
+}
+
+struct WiimoteClassicButtons: OptionSet, Hashable, Sendable {
+    let rawValue: UInt16
+
+    static let dpadRight = WiimoteClassicButtons(rawValue: 1 << 0)
+    static let dpadDown = WiimoteClassicButtons(rawValue: 1 << 1)
+    static let leftTriggerClick = WiimoteClassicButtons(rawValue: 1 << 2)
+    static let minus = WiimoteClassicButtons(rawValue: 1 << 3)
+    static let home = WiimoteClassicButtons(rawValue: 1 << 4)
+    static let plus = WiimoteClassicButtons(rawValue: 1 << 5)
+    static let rightTriggerClick = WiimoteClassicButtons(rawValue: 1 << 6)
+    static let zl = WiimoteClassicButtons(rawValue: 1 << 7)
+    static let b = WiimoteClassicButtons(rawValue: 1 << 8)
+    static let y = WiimoteClassicButtons(rawValue: 1 << 9)
+    static let a = WiimoteClassicButtons(rawValue: 1 << 10)
+    static let x = WiimoteClassicButtons(rawValue: 1 << 11)
+    static let zr = WiimoteClassicButtons(rawValue: 1 << 12)
+    static let dpadLeft = WiimoteClassicButtons(rawValue: 1 << 13)
+    static let dpadUp = WiimoteClassicButtons(rawValue: 1 << 14)
+
+    var labels: [String] {
+        let ordered: [(WiimoteClassicButtons, String)] = [
+            (.dpadUp, "Up"), (.dpadDown, "Down"), (.dpadLeft, "Left"), (.dpadRight, "Right"),
+            (.a, "A"), (.b, "B"), (.x, "X"), (.y, "Y"),
+            (.zl, "ZL"), (.zr, "ZR"), (.leftTriggerClick, "L"), (.rightTriggerClick, "R"),
+            (.plus, "+"), (.minus, "-"), (.home, "Home")
+        ]
+        return ordered.compactMap { contains($0.0) ? $0.1 : nil }
+    }
+}
+
+struct WiimoteClassicControllerInput: Equatable, Sendable {
+    let leftX: UInt16
+    let leftY: UInt16
+    let rightX: UInt16
+    let rightY: UInt16
+    let leftTrigger: UInt16
+    let rightTrigger: UInt16
+    let buttons: WiimoteClassicButtons
+
+    init?(bytes: [UInt8]) {
+        guard bytes.count >= 6 else { return nil }
+        self.leftX = UInt16(bytes[0] & 0x3F)
+        self.leftY = UInt16(bytes[1] & 0x3F)
+        self.rightX = UInt16((bytes[0] >> 3) & 0x18) |
+            UInt16((bytes[1] >> 5) & 0x06) |
+            UInt16((bytes[2] >> 7) & 0x01)
+        self.rightY = UInt16(bytes[2] & 0x1F)
+        self.leftTrigger = UInt16((bytes[2] >> 2) & 0x18) | UInt16(bytes[3] >> 5)
+        self.rightTrigger = UInt16(bytes[3] & 0x1F)
+        self.buttons = WiimoteClassicControllerInput.parseButtons(byte4: bytes[4], byte5: bytes[5])
+    }
+
+    init?(passthroughBytes bytes: [UInt8]) {
+        guard bytes.count >= 6 else { return nil }
+        self.leftX = UInt16(bytes[0] & 0x3E)
+        self.leftY = UInt16(bytes[1] & 0x3E)
+        self.rightX = UInt16((bytes[0] >> 3) & 0x18) |
+            UInt16((bytes[1] >> 5) & 0x06) |
+            UInt16((bytes[2] >> 7) & 0x01)
+        self.rightY = UInt16(bytes[2] & 0x1F)
+        self.leftTrigger = UInt16((bytes[2] >> 2) & 0x18) | UInt16(bytes[3] >> 5)
+        self.rightTrigger = UInt16(bytes[3] & 0x1F)
+        var buttons = WiimoteClassicControllerInput.parseButtons(byte4: bytes[4], byte5: bytes[5])
+        if (bytes[0] & 0x01) == 0 { buttons.insert(.dpadUp) }
+        if (bytes[1] & 0x01) == 0 { buttons.insert(.dpadLeft) }
+        self.buttons = buttons
+    }
+
+    private static func parseButtons(byte4: UInt8, byte5: UInt8) -> WiimoteClassicButtons {
+        var buttons: WiimoteClassicButtons = []
+        if (byte4 & 0x80) == 0 { buttons.insert(.dpadRight) }
+        if (byte4 & 0x40) == 0 { buttons.insert(.dpadDown) }
+        if (byte4 & 0x20) == 0 { buttons.insert(.leftTriggerClick) }
+        if (byte4 & 0x10) == 0 { buttons.insert(.minus) }
+        if (byte4 & 0x08) == 0 { buttons.insert(.home) }
+        if (byte4 & 0x04) == 0 { buttons.insert(.plus) }
+        if (byte4 & 0x02) == 0 { buttons.insert(.rightTriggerClick) }
+        if (byte5 & 0x80) == 0 { buttons.insert(.zl) }
+        if (byte5 & 0x40) == 0 { buttons.insert(.b) }
+        if (byte5 & 0x20) == 0 { buttons.insert(.y) }
+        if (byte5 & 0x10) == 0 { buttons.insert(.a) }
+        if (byte5 & 0x08) == 0 { buttons.insert(.x) }
+        if (byte5 & 0x04) == 0 { buttons.insert(.zr) }
+        if (byte5 & 0x02) == 0 { buttons.insert(.dpadLeft) }
+        if (byte5 & 0x01) == 0 { buttons.insert(.dpadUp) }
+        return buttons
+    }
+}
+
+struct WiimoteMotionPlusInput: Equatable, Sendable {
+    let yaw: UInt16
+    let roll: UInt16
+    let pitch: UInt16
+    let yawSlowMode: Bool
+    let rollSlowMode: Bool
+    let pitchSlowMode: Bool
+    let passthroughExtensionConnected: Bool
+
+    init?(bytes: [UInt8]) {
+        guard bytes.count >= 6 else { return nil }
+        self.yaw = UInt16(bytes[0]) | (UInt16(bytes[3] & 0xFC) << 6)
+        self.roll = UInt16(bytes[1]) | (UInt16(bytes[4] & 0xFC) << 6)
+        self.pitch = UInt16(bytes[2]) | (UInt16(bytes[5] & 0xFC) << 6)
+        self.yawSlowMode = (bytes[3] & 0x02) != 0
+        self.pitchSlowMode = (bytes[3] & 0x01) != 0
+        self.rollSlowMode = (bytes[4] & 0x02) != 0
+        self.passthroughExtensionConnected = (bytes[4] & 0x01) != 0
+    }
+
+    static func isMotionPlusPacket(_ bytes: [UInt8]) -> Bool {
+        guard bytes.count >= 6 else { return false }
+        return (bytes[5] & 0x03) == 0x02
+    }
+}
+
+struct WiimoteBalanceBoardSensors: Equatable, Sendable {
+    let topRight: UInt16
+    let bottomRight: UInt16
+    let topLeft: UInt16
+    let bottomLeft: UInt16
+
+    var total: UInt32 {
+        UInt32(topRight) + UInt32(bottomRight) + UInt32(topLeft) + UInt32(bottomLeft)
+    }
+}
+
+struct WiimoteBalanceBoardInput: Equatable, Sendable {
+    let sensors: WiimoteBalanceBoardSensors
+    let temperature: UInt8
+    let batteryRaw: UInt8
+
+    init?(bytes: [UInt8]) {
+        guard bytes.count >= 11 else { return nil }
+        self.sensors = WiimoteBalanceBoardSensors(
+            topRight: Self.bigEndian(bytes[0], bytes[1]),
+            bottomRight: Self.bigEndian(bytes[2], bytes[3]),
+            topLeft: Self.bigEndian(bytes[4], bytes[5]),
+            bottomLeft: Self.bigEndian(bytes[6], bytes[7])
+        )
+        self.temperature = bytes[8]
+        self.batteryRaw = bytes[10]
+    }
+
+    private static func bigEndian(_ high: UInt8, _ low: UInt8) -> UInt16 {
+        (UInt16(high) << 8) | UInt16(low)
+    }
+}
+
+struct WiimoteBalanceBoardWeight: Equatable, Sendable {
+    let topRightKilograms: Double
+    let bottomRightKilograms: Double
+    let topLeftKilograms: Double
+    let bottomLeftKilograms: Double
+
+    var totalKilograms: Double {
+        topRightKilograms + bottomRightKilograms + topLeftKilograms + bottomLeftKilograms
+    }
+}
+
+struct WiimoteBalanceBoardCalibration: Equatable, Sendable {
+    let zeroKilograms: WiimoteBalanceBoardSensors
+    let seventeenKilograms: WiimoteBalanceBoardSensors
+    let thirtyFourKilograms: WiimoteBalanceBoardSensors
+    let checksum: UInt32
+    let referenceTemperature: UInt8?
+
+    init?(bytes: [UInt8], referenceTemperature: UInt8? = nil) {
+        guard bytes.count >= 32 else { return nil }
+        self.zeroKilograms = Self.sensors(bytes, offset: 4)
+        self.seventeenKilograms = Self.sensors(bytes, offset: 12)
+        self.thirtyFourKilograms = Self.sensors(bytes, offset: 20)
+        self.checksum = (UInt32(bytes[28]) << 24) |
+            (UInt32(bytes[29]) << 16) |
+            (UInt32(bytes[30]) << 8) |
+            UInt32(bytes[31])
+        self.referenceTemperature = referenceTemperature
+    }
+
+    func weight(for input: WiimoteBalanceBoardInput) -> WiimoteBalanceBoardWeight {
+        WiimoteBalanceBoardWeight(
+            topRightKilograms: kilograms(
+                raw: input.sensors.topRight,
+                zero: zeroKilograms.topRight,
+                middle: seventeenKilograms.topRight,
+                high: thirtyFourKilograms.topRight
+            ),
+            bottomRightKilograms: kilograms(
+                raw: input.sensors.bottomRight,
+                zero: zeroKilograms.bottomRight,
+                middle: seventeenKilograms.bottomRight,
+                high: thirtyFourKilograms.bottomRight
+            ),
+            topLeftKilograms: kilograms(
+                raw: input.sensors.topLeft,
+                zero: zeroKilograms.topLeft,
+                middle: seventeenKilograms.topLeft,
+                high: thirtyFourKilograms.topLeft
+            ),
+            bottomLeftKilograms: kilograms(
+                raw: input.sensors.bottomLeft,
+                zero: zeroKilograms.bottomLeft,
+                middle: seventeenKilograms.bottomLeft,
+                high: thirtyFourKilograms.bottomLeft
+            )
+        )
+    }
+
+    private func kilograms(raw: UInt16, zero: UInt16, middle: UInt16, high: UInt16) -> Double {
+        if raw <= middle {
+            return interpolate(raw: raw, lowRaw: zero, highRaw: middle, lowKg: 0, highKg: 17)
+        }
+        return interpolate(raw: raw, lowRaw: middle, highRaw: high, lowKg: 17, highKg: 34)
+    }
+
+    private func interpolate(
+        raw: UInt16,
+        lowRaw: UInt16,
+        highRaw: UInt16,
+        lowKg: Double,
+        highKg: Double
+    ) -> Double {
+        let span = max(1.0, Double(highRaw) - Double(lowRaw))
+        let fraction = (Double(raw) - Double(lowRaw)) / span
+        return lowKg + fraction * (highKg - lowKg)
+    }
+
+    private static func sensors(_ bytes: [UInt8], offset: Int) -> WiimoteBalanceBoardSensors {
+        WiimoteBalanceBoardSensors(
+            topRight: bigEndian(bytes[offset], bytes[offset + 1]),
+            bottomRight: bigEndian(bytes[offset + 2], bytes[offset + 3]),
+            topLeft: bigEndian(bytes[offset + 4], bytes[offset + 5]),
+            bottomLeft: bigEndian(bytes[offset + 6], bytes[offset + 7])
+        )
+    }
+
+    private static func bigEndian(_ high: UInt8, _ low: UInt8) -> UInt16 {
+        (UInt16(high) << 8) | UInt16(low)
     }
 }
 

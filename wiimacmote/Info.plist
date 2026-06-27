@@ -26,6 +26,8 @@
     <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>WiiMacMote uses Bluetooth to discover, pair, and read input from Nintendo Wii Remote controllers.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>WiiMacMote uses Bluetooth to discover, pair, and read input from Nintendo Wii Remote controllers.</string>
     <key>NSHumanReadableCopyright</key>
     <string>WiiMacMote contributors</string>
     <key>NSPrincipalClass</key>
