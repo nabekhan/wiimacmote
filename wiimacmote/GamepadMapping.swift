@@ -21,6 +21,33 @@ enum ControllerProfile: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
+enum MotionInputSource: String, CaseIterable, Identifiable, Codable, Sendable {
+    case automatic
+    case accelerometer
+    case motionPlusGyro
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .automatic: return "Automatic"
+        case .accelerometer: return "Accelerometer"
+        case .motionPlusGyro: return "MotionPlus Gyro"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .automatic:
+            return "Uses MotionPlus yaw/pitch when available, otherwise falls back to Wii Remote accelerometer tilt."
+        case .accelerometer:
+            return "Uses Wii Remote accelerometer tilt, matching the existing motion-right-stick behavior."
+        case .motionPlusGyro:
+            return "Uses MotionPlus or Wii Remote Plus gyroscope axes, so motion input can work without a sensor bar."
+        }
+    }
+}
+
 struct VirtualGamepadState: Equatable, Sendable {
     var leftX: Int8 = 0
     var leftY: Int8 = 0
@@ -30,6 +57,35 @@ struct VirtualGamepadState: Equatable, Sendable {
     var buttons: UInt16 = 0
 
     static let neutral = VirtualGamepadState()
+}
+
+enum ControllerTransportKind: Equatable, Sendable {
+    case unknown
+    case usb
+    case bluetooth
+}
+
+struct ControllerMotionState: Equatable, Sendable {
+    var accelerationXG: Double = 0
+    var accelerationYG: Double = 0
+    var accelerationZG: Double = 0
+    var gyroPitchDegreesPerSecond: Double = 0
+    var gyroYawDegreesPerSecond: Double = 0
+    var gyroRollDegreesPerSecond: Double = 0
+
+    static let neutral = ControllerMotionState()
+}
+
+struct ControllerRuntimeSnapshot: Identifiable, Equatable, Sendable {
+    let id: UInt64
+    let slot: Int
+    let name: String
+    let address: String?
+    let batteryPercent: Int?
+    let transport: ControllerTransportKind
+    let gamepadState: VirtualGamepadState
+    let motion: ControllerMotionState
+    let hasFullGyro: Bool
 }
 
 enum VirtualGamepadButton: Int, Sendable {

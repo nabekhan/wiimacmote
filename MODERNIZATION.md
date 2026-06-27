@@ -47,7 +47,7 @@ Attribution is listed in `THIRD_PARTY_NOTICES.md`.
 
 ## 2.0.5 architecture
 
-`VirtualGamepadState` is the canonical, vendor-neutral state. `VirtualGamepadReports` encodes it into one of three immutable specifications. `VirtualGamepad` owns a serial output queue and one backend. Changing identity or backend resets/removes the previous device before creating the replacement.
+`VirtualGamepadState` is the canonical, vendor-neutral state. `VirtualGamepadReports` encodes it into one of three immutable specifications. `VirtualGamepad` owns a serial output queue and one backend. Changing identity or backend resets/removes the previous device before creating the replacement. `DiagnosticDSUServer` consumes the same generic controller snapshots for local DSU/Cemuhook UDP output, so emulator diagnostics are not tied to Wii-specific parser internals.
 
 The backend interface deliberately distinguishes synchronous IOKit publication from asynchronous CoreHID dispatch. Both send an initial neutral state, deduplicate unchanged state, and attempt a neutral report before cancellation.
 

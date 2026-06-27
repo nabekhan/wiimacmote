@@ -9,6 +9,7 @@ WiiMacMote discovers, pairs, reads, and translates Nintendo Wii Remote input on 
 - Dedicated serial queues for Bluetooth HID input and virtual output.
 - Up to four remotes with player LEDs, battery estimate, rumble, status refresh, report-rate diagnostics, buttons, and accelerometer data.
 - Wii protocol builders/parsers for memory/register reads and writes, EEPROM calibration, IR points, speaker reports, Nunchuk, Classic Controller, MotionPlus, and Balance Board packets.
+- Local DSU/Cemuhook UDP output on `127.0.0.1:26760` for emulator-compatible controller data and rumble.
 - Native macOS Settings-style controller UI with grouped panes, sidebar navigation, and original vector controller artwork.
 - Sideways and upright mappings, plus optional filtered tilt-to-right-stick input.
 - Three virtual output identities and two publication backends.
@@ -113,6 +114,7 @@ This is a development workaround for local app identity/TCC state. Release build
 - `WiimoteHIDController.swift` — physical HID lifecycle, report I/O, player sessions, and snapshots.
 - `WiimoteProtocol.swift` — Wii Remote report parser, output report builders, extension decoders, and calibration helpers.
 - `GamepadMapping.swift` — canonical gamepad state and Wii Remote mappings.
+- `DiagnosticDSUServer.swift` — local DSU/Cemuhook UDP server backed by generic controller snapshots.
 - `VirtualGamepadReports.swift` — virtual identities, descriptors, and report encoders.
 - `VirtualGamepad.swift` — IOHIDUserDevice/CoreHID publishers and lifecycle.
 - `DeveloperLabEnvironment.swift` — runtime entitlement visibility and AMFI boot-argument diagnostics.

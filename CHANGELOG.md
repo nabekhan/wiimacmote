@@ -17,6 +17,7 @@
 - Changed `Scripts/build.sh` to ad-hoc sign the built Release app and added `--sign-installed` for refreshing `/Applications/WiiMacMote.app`.
 - Exposed the virtual-output environment status in Standard and Developer Lab builds while keeping the restricted entitlement isolated to the lab signing path.
 - Added Wii protocol builders/parsers for read/write memory/register reports, read-data responses, speaker reports, IR initialization/points, EEPROM accelerometer calibration, extension initialization/identity, Nunchuk, Classic Controller, MotionPlus, and Balance Board calibration/input.
+- Replaced the localhost diagnostic WebSocket with a DSU/Cemuhook UDP server on `127.0.0.1:26760`, backed by generic controller snapshots and slot-based rumble handling.
 - Expanded portable core tests for protocol builders, memory reads, IR points, extension decoders, and calibration parsing.
 
 ## 2.0.5 — Explicit local AMFI developer path

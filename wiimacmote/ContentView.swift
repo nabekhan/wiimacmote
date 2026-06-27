@@ -137,11 +137,34 @@ struct ContentView: View {
                     .frame(width: 210)
                     .disabled(!manager.virtualGamepadEnabled)
                 }
-                rowDivider()
-                settingsRow(title: "Motion Right Stick", detail: "Maps accelerometer tilt to the virtual controller right stick.") {
+            }
+
+            settingsSection("Sensors") {
+                settingsRow(title: "Motion Right Stick", detail: "Maps the selected motion source to the virtual controller right stick.") {
                     Toggle("", isOn: $manager.motionRightStickEnabled)
                         .labelsHidden()
                         .disabled(!manager.virtualGamepadEnabled)
+                }
+                rowDivider()
+                settingsRow(title: "Motion Input Source", detail: manager.motionInputSource.detail) {
+                    Picker("Motion Input Source", selection: $manager.motionInputSource) {
+                        ForEach(MotionInputSource.allCases) { source in
+                            Text(source.title).tag(source)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 210)
+                    .disabled(!manager.virtualGamepadEnabled || !manager.motionRightStickEnabled)
+                }
+                rowDivider()
+                settingsRow(title: "Read MotionPlus Gyro", detail: "Activates MotionPlus or Wii Remote Plus gyroscope axes for motion input without a sensor bar.") {
+                    Toggle("", isOn: $manager.motionPlusEnabled)
+                        .labelsHidden()
+                }
+                rowDivider()
+                settingsRow(title: "Read IR Points", detail: "Initializes the Wii Remote IR camera. Wii protocol IR report modes also carry accelerometer bytes; virtual motion mapping remains controlled separately.") {
+                    Toggle("", isOn: $manager.irCameraEnabled)
+                        .labelsHidden()
                 }
             }
 
@@ -184,11 +207,6 @@ struct ContentView: View {
                         .labelStyle(.titleAndIcon)
                         .foregroundStyle(statusColor)
                 }
-                rowDivider()
-                settingsRow(title: "Scan for Controllers", detail: "Keep discovery active and automatically reinitialize it after interruptions until four controllers are connected.") {
-                    Toggle("", isOn: $manager.automaticScanning)
-                        .labelsHidden()
-                }
             }
 
             settingsSection("Pairing") {
@@ -215,6 +233,25 @@ struct ContentView: View {
 
     private var diagnosticsPage: some View {
         settingsPage(title: "Diagnostics", subtitle: "Recent Bluetooth, HID, and virtual-output events.") {
+            settingsSection("DSU / Cemuhook") {
+                settingsRow(title: "Controller UDP Stream", detail: "Publishes controller data for Dolphin, Cemu-compatible clients, and other DSU/Cemuhook consumers on localhost.") {
+                    Toggle("", isOn: $manager.diagnosticsDSUEnabled)
+                        .labelsHidden()
+                }
+                rowDivider()
+                environmentRow(
+                    title: "Endpoint",
+                    value: manager.diagnosticsDSUStatusText,
+                    symbolName: manager.diagnosticsDSUEnabled ? "network" : "network.slash",
+                    color: manager.diagnosticsDSUEnabled ? .blue : .secondary
+                )
+                rowDivider()
+                instructionRow(
+                    title: "Client Setup",
+                    message: "Configure DSU/Cemuhook clients to use UDP 127.0.0.1:26760. Rumble packets are forwarded to the matching Wii Remote slot."
+                )
+            }
+
             settingsSection("Log") {
                 HStack {
                     Button("Copy") {
@@ -320,9 +357,13 @@ struct ContentView: View {
             rowDivider()
             controllerMetricRow("Motion", accelerationText(wiimote.acceleration))
             rowDivider()
+            controllerMetricRow("Extension Motion", accelerationText(wiimote.extensionAcceleration))
+            rowDivider()
+            controllerMetricRow("Gyroscope", gyroscopeText(wiimote.motionPlusGyroscope))
+            rowDivider()
             controllerMetricRow("Extension", extensionText(wiimote))
             rowDivider()
-            controllerMetricRow("IR Points", wiimote.irPointCount == 0 ? "Off" : "\(wiimote.irPointCount) visible")
+            controllerMetricRow("IR Points", irPointText(wiimote))
             rowDivider()
             controllerMetricRow("Virtual Output", virtualGamepadText(wiimote))
 
@@ -358,7 +399,9 @@ struct ContentView: View {
             if remote.isConnected {
                 Button("Disconnect") { manager.disconnectSavedWiimote(address: remote.address) }
             } else {
-                Button("Connect") { manager.connectSavedWiimote(address: remote.address) }
+                Text("Turn on Scan to reconnect")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Button("Forget", role: .destructive) {
                 savedRemotePendingRemoval = remote
@@ -431,7 +474,7 @@ struct ContentView: View {
                 .padding(.bottom, 28)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(.background)
     }
 
     private func settingsSection<Content: View>(
@@ -447,7 +490,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 content()
             }
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(Color(nsColor: .separatorColor).opacity(0.28), lineWidth: 1)
@@ -683,6 +726,16 @@ struct ContentView: View {
         )
     }
 
+    private func gyroscopeText(_ gyroscope: WiimoteMotionPlusGyroscope?) -> String {
+        guard let gyroscope else { return manager.motionPlusEnabled ? "Waiting for MotionPlus" : "Off" }
+        return String(
+            format: "yaw %+.1f deg/s   roll %+.1f deg/s   pitch %+.1f deg/s",
+            gyroscope.yawDegreesPerSecond,
+            gyroscope.rollDegreesPerSecond,
+            gyroscope.pitchDegreesPerSecond
+        )
+    }
+
     private func extensionText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
         guard wiimote.extensionConnected else { return "Not detected" }
         var parts = [wiimote.extensionName ?? "Initializing"]
@@ -700,6 +753,17 @@ struct ContentView: View {
         return [wiimote.virtualGamepadIdentity, wiimote.virtualGamepadBackend]
             .compactMap { $0 }
             .joined(separator: " - ")
+    }
+
+    private func irPointText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
+        guard manager.irCameraEnabled else { return "Disabled" }
+        guard !wiimote.irPoints.isEmpty else { return "No visible points" }
+        return wiimote.irPoints.enumerated()
+            .map { index, point in
+                let size = point.size.map { " s\($0)" } ?? ""
+                return "P\(index + 1) \(point.x),\(point.y)\(size)"
+            }
+            .joined(separator: "  ")
     }
 
     private func artworkKind(for wiimote: ConnectedWiimoteSnapshot) -> ControllerArtwork.Kind {
@@ -783,83 +847,24 @@ private struct ControllerArtwork: View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let height = geometry.size.height
-            let bodyWidth = width * 0.50
-            let bodyHeight = height * 0.92
-            let x = (width - bodyWidth) / 2
-            let y = height * 0.04
+            let bodyWidth = width * 0.44
+            let bodyHeight = height * 0.88
+            let outline = active ? Color.accentColor : Color.secondary
 
             ZStack {
                 RoundedRectangle(cornerRadius: bodyWidth * 0.18, style: .continuous)
-                    .fill(Color(nsColor: .textBackgroundColor))
+                    .fill(outline.opacity(active ? 0.10 : 0.06))
                     .overlay {
                         RoundedRectangle(cornerRadius: bodyWidth * 0.18, style: .continuous)
-                            .stroke(Color.secondary.opacity(0.45), lineWidth: 1)
+                            .stroke(outline.opacity(active ? 0.80 : 0.55), lineWidth: 2)
                     }
                     .frame(width: bodyWidth, height: bodyHeight)
                     .position(x: width / 2, y: height / 2)
 
-                Circle()
-                    .fill(Color.primary.opacity(active ? 0.70 : 0.35))
-                    .frame(width: bodyWidth * 0.24)
-                    .position(x: width / 2, y: y + bodyHeight * 0.10)
-
-                Text("A")
-                    .font(.system(size: max(7, bodyWidth * 0.16), weight: .semibold))
-                    .foregroundStyle(Color(nsColor: .textBackgroundColor))
-                    .position(x: width / 2, y: y + bodyHeight * 0.10)
-
-                DPadShape()
-                    .fill(Color.primary.opacity(active ? 0.68 : 0.32))
-                    .frame(width: bodyWidth * 0.44, height: bodyWidth * 0.44)
-                    .position(x: width / 2, y: y + bodyHeight * 0.24)
-
-                VStack(spacing: bodyHeight * 0.016) {
-                    ForEach(0..<4, id: \.self) { _ in
-                        HStack(spacing: bodyWidth * 0.055) {
-                            ForEach(0..<3, id: \.self) { _ in
-                                Circle()
-                                    .fill(Color.secondary.opacity(0.50))
-                                    .frame(width: bodyWidth * 0.045)
-                            }
-                        }
-                    }
-                }
-                .position(x: width / 2, y: y + bodyHeight * 0.40)
-
-                HStack(spacing: bodyWidth * 0.12) {
-                    Text("-")
-                    Circle().frame(width: bodyWidth * 0.14)
-                    Text("+")
-                }
-                .font(.system(size: max(7, bodyWidth * 0.13), weight: .medium))
-                .foregroundStyle(Color.primary.opacity(active ? 0.62 : 0.30))
-                .position(x: width / 2, y: y + bodyHeight * 0.52)
-
-                VStack(spacing: bodyHeight * 0.035) {
-                    Capsule().frame(width: bodyWidth * 0.42, height: bodyHeight * 0.036)
-                    Capsule().frame(width: bodyWidth * 0.38, height: bodyHeight * 0.036)
-                }
-                .foregroundStyle(Color.primary.opacity(active ? 0.62 : 0.30))
-                .position(x: width / 2, y: y + bodyHeight * 0.67)
-
-                HStack(spacing: bodyWidth * 0.04) {
-                    ForEach(0..<4, id: \.self) { index in
-                        RoundedRectangle(cornerRadius: 1, style: .continuous)
-                            .fill(index == 0 && active ? Color.accentColor : Color.secondary.opacity(0.35))
-                            .frame(width: bodyWidth * 0.07, height: bodyHeight * 0.018)
-                    }
-                }
-                .position(x: width / 2, y: y + bodyHeight * 0.82)
-
-                Path { path in
-                    path.move(to: CGPoint(x: x + bodyWidth * 0.50, y: y + bodyHeight * 0.90))
-                    path.addLine(to: CGPoint(x: x + bodyWidth * 0.50, y: y + bodyHeight * 1.03))
-                    path.addQuadCurve(
-                        to: CGPoint(x: x + bodyWidth * 0.72, y: y + bodyHeight * 1.08),
-                        control: CGPoint(x: x + bodyWidth * 0.50, y: y + bodyHeight * 1.08)
-                    )
-                }
-                .stroke(Color.secondary.opacity(0.38), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                Capsule()
+                    .fill(outline.opacity(active ? 0.18 : 0.10))
+                    .frame(width: bodyWidth * 0.32, height: bodyHeight * 0.035)
+                    .position(x: width / 2, y: height * 0.17)
             }
         }
     }
@@ -868,32 +873,16 @@ private struct ControllerArtwork: View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let height = geometry.size.height
+            let outline = active ? Color.accentColor : Color.secondary
             ZStack {
                 NunchukBodyShape()
-                    .fill(Color(nsColor: .textBackgroundColor))
+                    .fill(outline.opacity(active ? 0.10 : 0.06))
                     .overlay {
                         NunchukBodyShape()
-                            .stroke(Color.secondary.opacity(0.45), lineWidth: 1)
+                            .stroke(outline.opacity(active ? 0.80 : 0.55), lineWidth: 2)
                     }
                     .frame(width: width * 0.56, height: height * 0.78)
                     .position(x: width * 0.48, y: height * 0.52)
-
-                Circle()
-                    .fill(Color.primary.opacity(active ? 0.68 : 0.32))
-                    .frame(width: width * 0.20)
-                    .position(x: width * 0.48, y: height * 0.30)
-
-                Circle()
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .frame(width: width * 0.10)
-                    .position(x: width * 0.48, y: height * 0.30)
-
-                HStack(spacing: width * 0.06) {
-                    Capsule().frame(width: width * 0.11, height: height * 0.045)
-                    Capsule().frame(width: width * 0.11, height: height * 0.045)
-                }
-                .foregroundStyle(Color.primary.opacity(active ? 0.62 : 0.30))
-                .position(x: width * 0.48, y: height * 0.56)
 
                 Path { path in
                     path.move(to: CGPoint(x: width * 0.48, y: height * 0.14))
@@ -903,7 +892,7 @@ private struct ControllerArtwork: View {
                         control2: CGPoint(x: width * 0.70, y: height * 0.05)
                     )
                 }
-                .stroke(Color.secondary.opacity(0.38), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .stroke(outline.opacity(active ? 0.65 : 0.42), style: StrokeStyle(lineWidth: 2, lineCap: .round))
             }
         }
     }
@@ -912,42 +901,15 @@ private struct ControllerArtwork: View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let height = geometry.size.height
+            let outline = active ? Color.accentColor : Color.secondary
             ZStack {
                 ClassicControllerBodyShape()
-                    .fill(Color(nsColor: .textBackgroundColor))
+                    .fill(outline.opacity(active ? 0.10 : 0.06))
                     .overlay {
-                        ClassicControllerBodyShape().stroke(Color.secondary.opacity(0.45), lineWidth: 1)
+                        ClassicControllerBodyShape().stroke(outline.opacity(active ? 0.80 : 0.55), lineWidth: 2)
                     }
                     .frame(width: width * 0.92, height: height * 0.52)
                     .position(x: width / 2, y: height * 0.50)
-
-                DPadShape()
-                    .fill(Color.primary.opacity(active ? 0.64 : 0.30))
-                    .frame(width: width * 0.16, height: width * 0.16)
-                    .position(x: width * 0.29, y: height * 0.49)
-
-                HStack(spacing: width * 0.045) {
-                    ForEach(0..<4, id: \.self) { _ in
-                        Circle()
-                            .fill(Color.primary.opacity(active ? 0.62 : 0.30))
-                            .frame(width: width * 0.055)
-                    }
-                }
-                .position(x: width * 0.70, y: height * 0.48)
-
-                HStack(spacing: width * 0.14) {
-                    Circle().frame(width: width * 0.11)
-                    Circle().frame(width: width * 0.11)
-                }
-                .foregroundStyle(Color.secondary.opacity(0.55))
-                .position(x: width * 0.50, y: height * 0.62)
-
-                HStack(spacing: width * 0.24) {
-                    Capsule().frame(width: width * 0.18, height: height * 0.035)
-                    Capsule().frame(width: width * 0.18, height: height * 0.035)
-                }
-                .foregroundStyle(Color.secondary.opacity(0.45))
-                .position(x: width * 0.50, y: height * 0.31)
             }
         }
     }
@@ -956,34 +918,21 @@ private struct ControllerArtwork: View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let height = geometry.size.height
+            let outline = active ? Color.accentColor : Color.secondary
             ZStack {
-                BalanceBoardShape()
-                    .fill(Color(nsColor: .textBackgroundColor))
+                RoundedRectangle(cornerRadius: height * 0.14, style: .continuous)
+                    .fill(outline.opacity(active ? 0.10 : 0.06))
                     .overlay {
-                        BalanceBoardShape()
-                            .stroke(Color.secondary.opacity(0.45), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: height * 0.14, style: .continuous)
+                            .stroke(outline.opacity(active ? 0.80 : 0.55), lineWidth: 2)
                     }
-                    .frame(width: width * 0.92, height: height * 0.50)
+                    .frame(width: width * 0.92, height: height * 0.46)
                     .position(x: width / 2, y: height * 0.52)
 
                 RoundedRectangle(cornerRadius: width * 0.04, style: .continuous)
-                    .fill(Color.secondary.opacity(0.16))
-                    .frame(width: width * 0.70, height: height * 0.18)
+                    .stroke(outline.opacity(active ? 0.28 : 0.18), lineWidth: 1)
+                    .frame(width: width * 0.66, height: height * 0.18)
                     .position(x: width / 2, y: height * 0.52)
-
-                HStack(spacing: width * 0.50) {
-                    Circle().frame(width: width * 0.07)
-                    Circle().frame(width: width * 0.07)
-                }
-                .foregroundStyle(Color.primary.opacity(active ? 0.58 : 0.28))
-                .position(x: width / 2, y: height * 0.42)
-
-                HStack(spacing: width * 0.50) {
-                    Circle().frame(width: width * 0.07)
-                    Circle().frame(width: width * 0.07)
-                }
-                .foregroundStyle(Color.primary.opacity(active ? 0.58 : 0.28))
-                .position(x: width / 2, y: height * 0.62)
             }
         }
     }

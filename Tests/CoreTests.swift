@@ -37,6 +37,8 @@ struct CoreTests {
         try testGenericVirtualReport()
         try testXboxVirtualReports()
         try testSwitchProVirtualReport()
+        try testDSUPacketEncoding()
+        try testDSUControllerDataPayload()
         try testAMFIBootArgumentParser()
         print("All WiiMacMote core tests passed.")
     }
@@ -126,6 +128,13 @@ struct CoreTests {
         let speaker = WiimoteOutputReports.speakerData([0xAA, 0xBB])
         try expect(speaker?.reportID == 0x18, "Speaker-data report ID is wrong")
         try expect(speaker?.payload[0] == 0x10, "Speaker-data length nibble is wrong")
+
+        let motionPlus = WiimoteOutputReports.motionPlusActivate(mode: .standalone)
+        try expect(motionPlus?.reportID == 0x16, "MotionPlus activation should be a write-memory report")
+        try expect(
+            Array(motionPlus?.payload.prefix(6) ?? []) == [0x04, 0xA6, 0x00, 0xFE, 0x01, 0x04],
+            "MotionPlus standalone activation payload is wrong"
+        )
     }
 
     private static func testIRReport() throws {
@@ -144,6 +153,26 @@ struct CoreTests {
         try expect(input.irPoints[0].x == 0x123, "IR X coordinate is wrong")
         try expect(input.irPoints[0].y == 0x234, "IR Y coordinate is wrong")
         try expect(input.irPoints[0].size == 5, "IR size is wrong")
+
+        let nunchukBytes: [UInt8] = [0x80, 0x7F, 0x80, 0x81, 0x7F, 0xAC]
+        let packetWithExtension = WiimoteReportParser.parse(
+            Data([0x37, 0x00, 0x00, 0x80, 0x80, 0x80] + Array(repeating: 0xFF, count: 10) + nunchukBytes)
+        )
+        guard case .input(let inputWithExtension) = packetWithExtension else {
+            throw TestFailure.failed("0x37 report was not parsed as input")
+        }
+        try expect(inputWithExtension.irData.count == 10, "0x37 IR payload should use basic 10-byte IR data")
+        try expect(inputWithExtension.extensionData == nunchukBytes, "0x37 extension payload should preserve exact Nunchuk bytes")
+        try expect(WiimoteNunchukInput(bytes: inputWithExtension.extensionData) != nil, "0x37 Nunchuk payload should decode")
+
+        let basicIRSequence = WiimoteOutputReports.irInitializationSequence(mode: .basic)
+        try expect(
+            basicIRSequence.contains { Array($0.payload.prefix(6)) == [0x04, 0xB0, 0x00, 0x33, 0x01, WiimoteIRMode.basic.rawValue] },
+            "Basic IR initialization should write basic mode"
+        )
+
+        let fullIR = Array(ir.prefix(3)) + Array(repeating: 0, count: 6) + Array(ir.prefix(3)) + Array(repeating: 0, count: 6)
+        try expect(WiimoteIRPoint.parse(fullIR).count == 2, "Full/interleaved IR objects should parse coordinates")
     }
 
     private static func testExtensionReport() throws {
@@ -319,6 +348,74 @@ struct CoreTests {
         try expect(report[3] == 6, "Switch hat value is wrong")
     }
 
+    private static func testDSUPacketEncoding() throws {
+        let server = DiagnosticDSUServer(port: 26760)
+        let packet = Array(server.buildPacket(messageType: 0x100000, payload: [0xE9, 0x03]))
+
+        try expect(Array(packet.prefix(4)) == Array("DSUS".utf8), "DSU server magic is wrong")
+        try expect(uint16LE(packet, offset: 4) == 1001, "DSU protocol version is wrong")
+        try expect(uint16LE(packet, offset: 6) == 6, "DSU packet length should include message type")
+        try expect(uint32LE(packet, offset: 16) == 0x100000, "DSU message type is wrong")
+        try expect(Array(packet.suffix(2)) == [0xE9, 0x03], "DSU payload was not preserved")
+
+        guard let encodedCRC = uint32LE(packet, offset: 8) else {
+            throw TestFailure.failed("DSU CRC field was missing")
+        }
+        var checksumBytes = packet
+        writeLittleEndian(UInt32(0), into: &checksumBytes, at: 8)
+        try expect(crc32(checksumBytes) == encodedCRC, "DSU CRC32 is wrong")
+    }
+
+    private static func testDSUControllerDataPayload() throws {
+        var state = VirtualGamepadState.neutral
+        state.leftX = 127
+        state.leftY = -127
+        state.rightX = -127
+        state.rightY = 127
+        state.hat = 1
+        state.buttons = VirtualGamepadButton.south.mask |
+            VirtualGamepadButton.east.mask |
+            VirtualGamepadButton.start.mask |
+            VirtualGamepadButton.select.mask |
+            VirtualGamepadButton.home.mask |
+            VirtualGamepadButton.rightTrigger.mask
+
+        let snapshot = ControllerRuntimeSnapshot(
+            id: 0x0102_0304_0506,
+            slot: 1,
+            name: "Test Remote",
+            address: "AA:BB:CC:DD:EE:FF",
+            batteryPercent: 75,
+            transport: .bluetooth,
+            gamepadState: state,
+            motion: ControllerMotionState(
+                accelerationXG: 1.25,
+                accelerationYG: -2.5,
+                accelerationZG: 0.5,
+                gyroPitchDegreesPerSecond: 3,
+                gyroYawDegreesPerSecond: 4,
+                gyroRollDegreesPerSecond: 5
+            ),
+            hasFullGyro: true
+        )
+
+        let payload = DiagnosticDSUServer(port: 26760).controllerDataPayload(snapshot, packetCounter: 42)
+        try expect(payload.count == 80, "DSU controller-data payload must be 80 bytes")
+        try expect(
+            Array(payload[0...10]) == [1, 2, 2, 2, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x04],
+            "DSU shared controller header is wrong"
+        )
+        try expect(payload[11] == 1, "DSU connected byte is wrong")
+        try expect(uint32LE(payload, offset: 12) == 42, "DSU packet counter is wrong")
+        try expect(payload[16] == 0x39, "DSU d-pad/options/share bitmask is wrong")
+        try expect(payload[17] == 0x62, "DSU face/shoulder/trigger bitmask is wrong")
+        try expect(payload[18] == 1, "DSU HOME byte is wrong")
+        try expect(Array(payload[20...23]) == [255, 255, 1, 1], "DSU stick axes are wrong")
+        try expect(payload[26] == 255 && payload[27] == 255, "DSU analog hat directions are wrong")
+        try expect(abs((float32LE(payload, offset: 56) ?? 0) - 1.25) < 0.001, "DSU acceleration X is wrong")
+        try expect(abs((float32LE(payload, offset: 68) ?? 0) - 3) < 0.001, "DSU gyro pitch is wrong")
+    }
+
     private static func testAMFIBootArgumentParser() throws {
         try expect(
             DeveloperLabEnvironment.containsAMFIRelaxation(
@@ -338,6 +435,47 @@ struct CoreTests {
             ),
             "Unrelated or disabled AMFI tokens must not match"
         )
+    }
+
+    private static func uint16LE(_ bytes: [UInt8], offset: Int) -> UInt16? {
+        guard bytes.count >= offset + 2 else { return nil }
+        return UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
+    }
+
+    private static func uint32LE(_ bytes: [UInt8], offset: Int) -> UInt32? {
+        guard bytes.count >= offset + 4 else { return nil }
+        return UInt32(bytes[offset]) |
+            (UInt32(bytes[offset + 1]) << 8) |
+            (UInt32(bytes[offset + 2]) << 16) |
+            (UInt32(bytes[offset + 3]) << 24)
+    }
+
+    private static func float32LE(_ bytes: [UInt8], offset: Int) -> Float? {
+        uint32LE(bytes, offset: offset).map(Float.init(bitPattern:))
+    }
+
+    private static func writeLittleEndian(_ value: UInt32, into bytes: inout [UInt8], at offset: Int) {
+        guard bytes.count >= offset + 4 else { return }
+        bytes[offset] = UInt8(value & 0xFF)
+        bytes[offset + 1] = UInt8((value >> 8) & 0xFF)
+        bytes[offset + 2] = UInt8((value >> 16) & 0xFF)
+        bytes[offset + 3] = UInt8((value >> 24) & 0xFF)
+    }
+
+    private static func crc32(_ bytes: [UInt8]) -> UInt32 {
+        var crc: UInt32 = 0xFFFF_FFFF
+        for byte in bytes {
+            var value = (crc ^ UInt32(byte)) & 0xFF
+            for _ in 0..<8 {
+                if (value & 1) != 0 {
+                    value = 0xEDB88320 ^ (value >> 1)
+                } else {
+                    value >>= 1
+                }
+            }
+            crc = value ^ (crc >> 8)
+        }
+        return crc ^ 0xFFFF_FFFF
     }
 
 }

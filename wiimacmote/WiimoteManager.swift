@@ -166,6 +166,38 @@ final class WiimoteManager: NSObject, ObservableObject {
         }
     }
 
+    @Published var motionInputSource: MotionInputSource {
+        didSet {
+            defaults.set(motionInputSource.rawValue, forKey: Keys.motionInputSource)
+            applyHIDSettings()
+        }
+    }
+
+    @Published var motionPlusEnabled: Bool {
+        didSet {
+            defaults.set(motionPlusEnabled, forKey: Keys.motionPlusEnabled)
+            applyHIDSettings()
+        }
+    }
+
+    @Published var irCameraEnabled: Bool {
+        didSet {
+            defaults.set(irCameraEnabled, forKey: Keys.irCameraEnabled)
+            applyHIDSettings()
+        }
+    }
+
+    @Published var diagnosticsDSUEnabled: Bool {
+        didSet {
+            defaults.set(diagnosticsDSUEnabled, forKey: Keys.diagnosticsDSUEnabled)
+            configureDiagnosticDSU()
+        }
+    }
+
+    @Published private(set) var diagnosticsDSUClientCount = 0
+    @Published private(set) var diagnosticsDSUError: String?
+    @Published private(set) var diagnosticsDSURunning = false
+
     let diagnostics = DiagnosticLog()
 
     private enum Keys {
@@ -175,6 +207,10 @@ final class WiimoteManager: NSObject, ObservableObject {
         static let virtualGamepadBackendPreference = "virtualGamepadBackendPreference"
         static let controllerProfile = "controllerProfile"
         static let motionRightStickEnabled = "motionRightStickEnabled"
+        static let motionInputSource = "motionInputSource"
+        static let motionPlusEnabled = "motionPlusEnabled"
+        static let irCameraEnabled = "irCameraEnabled"
+        static let diagnosticsDSUEnabled = "diagnosticsDSUEnabled"
     }
 
     private let defaults: UserDefaults
@@ -188,9 +224,12 @@ final class WiimoteManager: NSObject, ObservableObject {
     private var connectionCooldowns: [String: Date] = [:]
     private var retryWorkItem: DispatchWorkItem?
     private var hidWaitWorkItem: DispatchWorkItem?
+    private var hidWaitRecoveryWorkItem: DispatchWorkItem?
     private var inquiryStopReason: String?
     private var suppressInquiryCompletionUntil: Date?
     private var hasStarted = false
+    private let diagnosticsDSUPort: UInt16 = 26760
+    private lazy var diagnosticDSUServer = DiagnosticDSUServer(port: diagnosticsDSUPort)
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -205,6 +244,12 @@ final class WiimoteManager: NSObject, ObservableObject {
             rawValue: defaults.string(forKey: Keys.virtualGamepadBackendPreference) ?? ""
         ) ?? defaultVirtualBackend
         self.motionRightStickEnabled = defaults.object(forKey: Keys.motionRightStickEnabled) as? Bool ?? false
+        self.motionInputSource = MotionInputSource(
+            rawValue: defaults.string(forKey: Keys.motionInputSource) ?? ""
+        ) ?? .automatic
+        self.motionPlusEnabled = defaults.object(forKey: Keys.motionPlusEnabled) as? Bool ?? false
+        self.irCameraEnabled = defaults.object(forKey: Keys.irCameraEnabled) as? Bool ?? false
+        self.diagnosticsDSUEnabled = defaults.object(forKey: Keys.diagnosticsDSUEnabled) as? Bool ?? false
         self.controllerProfile = ControllerProfile(
             rawValue: defaults.string(forKey: Keys.controllerProfile) ?? ""
         ) ?? .sideways
@@ -217,6 +262,7 @@ final class WiimoteManager: NSObject, ObservableObject {
         stopInquiry(reason: "manager teardown")
         centralManager?.delegate = nil
         hidController.stop()
+        diagnosticDSUServer.stop()
     }
 
     func start() {
@@ -224,6 +270,7 @@ final class WiimoteManager: NSObject, ObservableObject {
         hasStarted = true
 
         hidController.start()
+        configureDiagnosticDSUCallbacks()
         refreshSavedWiimotes()
         diagnostics.append(
             "🚀",
@@ -247,6 +294,7 @@ final class WiimoteManager: NSObject, ObservableObject {
             queue: .main,
             options: [CBCentralManagerOptionShowPowerAlertKey: false]
         )
+        configureDiagnosticDSU()
     }
 
     func startScanning() {
@@ -266,7 +314,7 @@ final class WiimoteManager: NSObject, ObservableObject {
             return
         }
         guard pairingBridge == nil, activePairingToken == nil else { return }
-        guard retryWorkItem == nil, hidWaitWorkItem == nil else { return }
+        guard retryWorkItem == nil, hidWaitWorkItem == nil, hidWaitRecoveryWorkItem == nil else { return }
         guard wiimotes.count < 4 else { return }
         guard !isScanning else { return }
 
@@ -310,25 +358,6 @@ final class WiimoteManager: NSObject, ObservableObject {
         if wiimotes.isEmpty {
             phase = .idle
         }
-    }
-
-    func connectSavedWiimote(address: String) {
-        guard let device = IOBluetoothDevice(addressString: address) else {
-            diagnostics.append("", "Saved remote \(address) is no longer available to Bluetooth.")
-            refreshSavedWiimotes()
-            return
-        }
-
-        if !device.isConnected() {
-            let result = device.openConnection()
-            if result != kIOReturnSuccess {
-                diagnostics.append("", "Open connection returned \(hex(result)) for \(address).")
-            }
-        }
-
-        phase = .waitingForHID(name: device.name ?? "Wii Remote")
-        scheduleHIDWaitTimeout(name: device.name ?? "Wii Remote")
-        refreshSavedWiimotes()
     }
 
     func disconnectWiimote(id: UInt64) {
@@ -418,6 +447,16 @@ final class WiimoteManager: NSObject, ObservableObject {
         hidController.calibrateMotion(id: id)
     }
 
+    var diagnosticsDSUStatusText: String {
+        let endpoint = "udp://127.0.0.1:\(diagnosticsDSUPort)"
+        guard diagnosticsDSUEnabled else { return "Off - \(endpoint)" }
+        if let diagnosticsDSUError {
+            return "Error - \(diagnosticsDSUError)"
+        }
+        guard diagnosticsDSURunning else { return "Starting - \(endpoint)" }
+        return "\(endpoint) - \(diagnosticsDSUClientCount) client\(diagnosticsDSUClientCount == 1 ? "" : "s")"
+    }
+
     func openBluetoothSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.Bluetooth") else { return }
         NSWorkspace.shared.open(url)
@@ -443,7 +482,10 @@ final class WiimoteManager: NSObject, ObservableObject {
             virtualGamepadIdentity: virtualGamepadIdentity,
             virtualGamepadBackendPreference: virtualGamepadBackendPreference,
             profile: controllerProfile,
-            motionRightStickEnabled: motionRightStickEnabled
+            motionRightStickEnabled: motionRightStickEnabled,
+            motionInputSource: motionInputSource,
+            motionPlusEnabled: motionPlusEnabled,
+            irCameraEnabled: irCameraEnabled
         )
     }
 
@@ -459,10 +501,81 @@ final class WiimoteManager: NSObject, ObservableObject {
         hidController.onSnapshotsChanged = { [weak self] snapshots in
             self?.wiimotes = snapshots
             self?.refreshSavedWiimotes()
+            self?.publishDiagnosticDSUSnapshots(snapshots)
         }
         hidController.onConnectionCountChanged = { [weak self] count in
             self?.handleConnectionCountChanged(count)
         }
+    }
+
+    private func configureDiagnosticDSUCallbacks() {
+        diagnosticDSUServer.onRumble = { [weak self] command in
+            self?.handleDiagnosticDSURumble(command)
+        }
+        diagnosticDSUServer.onStateChanged = { [weak self] isRunning, clientCount, error in
+            guard let self else { return }
+            let wasRunning = self.diagnosticsDSURunning
+            let previousError = self.diagnosticsDSUError
+            self.diagnosticsDSUClientCount = clientCount
+            self.diagnosticsDSUError = error
+            self.diagnosticsDSURunning = isRunning
+            if let error, error != previousError {
+                self.diagnostics.append("⚠", "Diagnostics DSU server failed: \(error)")
+            } else if isRunning && !wasRunning {
+                self.diagnostics.append(
+                    "ℹ",
+                    "Diagnostics DSU server listening on udp://127.0.0.1:\(self.diagnosticsDSUPort)."
+                )
+            }
+        }
+    }
+
+    private func configureDiagnosticDSU() {
+        guard hasStarted else { return }
+        if diagnosticsDSUEnabled {
+            diagnosticDSUServer.start()
+            publishDiagnosticDSUSnapshots(wiimotes)
+        } else {
+            diagnosticDSUServer.updateControllers([])
+            diagnosticDSUServer.stop()
+            diagnosticsDSUClientCount = 0
+            diagnosticsDSUError = nil
+            diagnosticsDSURunning = false
+        }
+    }
+
+    private func publishDiagnosticDSUSnapshots(_ snapshots: [ConnectedWiimoteSnapshot]) {
+        guard diagnosticsDSUEnabled else { return }
+        diagnosticDSUServer.updateControllers(snapshots.map(controllerRuntimeSnapshot))
+    }
+
+    private func controllerRuntimeSnapshot(_ wiimote: ConnectedWiimoteSnapshot) -> ControllerRuntimeSnapshot {
+        let slot = min(max(wiimote.playerIndex - 1, 0), 3)
+        return ControllerRuntimeSnapshot(
+            id: wiimote.id,
+            slot: slot,
+            name: wiimote.name,
+            address: wiimote.address,
+            batteryPercent: wiimote.batteryPercent,
+            transport: .bluetooth,
+            gamepadState: wiimote.gamepadState,
+            motion: ControllerMotionState(
+                accelerationXG: wiimote.acceleration?.xG ?? 0,
+                accelerationYG: wiimote.acceleration?.yG ?? 0,
+                accelerationZG: wiimote.acceleration?.zG ?? 0,
+                gyroPitchDegreesPerSecond: wiimote.motionPlusGyroscope?.pitchDegreesPerSecond ?? 0,
+                gyroYawDegreesPerSecond: wiimote.motionPlusGyroscope?.yawDegreesPerSecond ?? 0,
+                gyroRollDegreesPerSecond: wiimote.motionPlusGyroscope?.rollDegreesPerSecond ?? 0
+            ),
+            hasFullGyro: wiimote.motionPlusGyroscope != nil
+        )
+    }
+
+    private func handleDiagnosticDSURumble(_ command: DiagnosticDSURumbleCommand) {
+        guard let target = wiimotes.first(where: { min(max($0.playerIndex - 1, 0), 3) == command.slot }) else {
+            return
+        }
+        setRumble(id: target.id, enabled: command.intensity > 0)
     }
 
     private func handleConnectionCountChanged(_ count: Int) {
@@ -531,7 +644,7 @@ final class WiimoteManager: NSObject, ObservableObject {
                 }
             }
             phase = .waitingForHID(name: name)
-            scheduleHIDWaitTimeout(name: name)
+            scheduleHIDWaitTimeout(name: name, address: address)
             refreshSavedWiimotes()
             return
         }
@@ -618,7 +731,7 @@ final class WiimoteManager: NSObject, ObservableObject {
                     diagnostics.append("⚠️", "Post-pair connection returned \(hex(openResult)).")
                 }
             }
-            scheduleHIDWaitTimeout(name: name)
+            scheduleHIDWaitTimeout(name: name, address: address)
             refreshSavedWiimotes()
             return
         }
@@ -653,17 +766,49 @@ final class WiimoteManager: NSObject, ObservableObject {
         retryWorkItem = nil
         hidWaitWorkItem?.cancel()
         hidWaitWorkItem = nil
+        hidWaitRecoveryWorkItem?.cancel()
+        hidWaitRecoveryWorkItem = nil
         pairingBridge?.cancel()
         pairingBridge = nil
         activePairingToken = nil
     }
 
-    private func scheduleHIDWaitTimeout(name: String) {
+    private func scheduleHIDWaitTimeout(name: String, address: String?) {
         hidWaitWorkItem?.cancel()
+        hidWaitRecoveryWorkItem?.cancel()
         let countBefore = wiimotes.count
+        if let address {
+            let recovery = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.hidWaitRecoveryWorkItem = nil
+                self.hidWaitWorkItem?.cancel()
+                self.hidWaitWorkItem = nil
+                guard self.wiimotes.count == countBefore else { return }
+
+                if let device = IOBluetoothDevice(addressString: address), device.isConnected() {
+                    let closeResult = device.closeConnection()
+                    if closeResult == kIOReturnSuccess {
+                        self.diagnostics.append("ℹ", "HID did not appear for \(name); closed the stale Bluetooth connection so the remote can reconnect.")
+                    } else {
+                        self.diagnostics.append("⚠", "HID recovery close returned \(self.hex(closeResult)) for \(name).")
+                    }
+                } else {
+                    self.diagnostics.append("ℹ", "HID did not appear for \(name); resuming scan for its reconnect attempt.")
+                }
+
+                self.phase = self.automaticScanning ? .scanning : .idle
+                self.refreshSavedWiimotes()
+                self.resumeScanning(after: 0.75)
+            }
+            hidWaitRecoveryWorkItem = recovery
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: recovery)
+        }
+
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.hidWaitWorkItem = nil
+            self.hidWaitRecoveryWorkItem?.cancel()
+            self.hidWaitRecoveryWorkItem = nil
             guard self.wiimotes.count == countBefore else { return }
             self.phase = .error("\(name) paired, but its HID connection did not appear.")
             self.diagnostics.append(
