@@ -20,6 +20,9 @@
 - Select `WiiMacMote` and `My Mac`.
 - Build and run.
 - Or run `./Scripts/build.sh`.
+- Local copied apps may need fresh ad-hoc signing for macOS Bluetooth permission.
+- Sign the installed app with `codesign --force --deep --sign - /Applications/WiiMacMote.app`.
+- Or run `./Scripts/build.sh --sign-installed`.
 - Run checks with `./Scripts/verify-source.sh`.
 
 ## Pair
