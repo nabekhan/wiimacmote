@@ -34,7 +34,39 @@ else
   "$ROOT/Scripts/diagnose-developer-lab.sh" "$APP"
 fi
 
-if (( FORCE == 1 )); then
-  exec "$ROOT/Scripts/launch-developer-lab.sh" --app "$APP" --force -- "$@"
+if [[ ! -d "$APP" ]]; then
+  echo "App bundle not found: $APP" >&2
+  echo "Build it first with ./Scripts/build-developer-lab.sh" >&2
+  exit 1
 fi
-exec "$ROOT/Scripts/launch-developer-lab.sh" --app "$APP" -- "$@"
+
+BINARY="$APP/Contents/MacOS/WiiMacMote"
+if [[ ! -x "$BINARY" ]]; then
+  echo "App executable not found: $BINARY" >&2
+  exit 1
+fi
+
+BOOT_ARGS="$(/usr/sbin/sysctl -n kern.bootargs 2>/dev/null || true)"
+if [[ -z "$BOOT_ARGS" ]]; then
+  BOOT_ARGS="$(/usr/sbin/nvram boot-args 2>/dev/null | /usr/bin/sed -E 's/^boot-args[[:space:]]+//' || true)"
+fi
+
+AMFI_HINT=0
+case " $BOOT_ARGS " in
+  *" amfi_get_out_of_my_way=0x1 "*|*" amfi_get_out_of_my_way=0X1 "*|*" amfi_get_out_of_my_way=1 "*)
+    AMFI_HINT=1
+    ;;
+esac
+
+if (( AMFI_HINT == 0 && FORCE == 0 )); then
+  echo "The AMFI relaxation boot argument was not visible." >&2
+  echo "An ad-hoc app carrying this restricted entitlement may be terminated before main()." >&2
+  echo "Use --force only after independently verifying your isolated lab configuration." >&2
+  exit 78
+fi
+
+echo
+echo "Launching the executable directly so AMFI, dyld, and IOKit errors remain in this terminal:"
+printf '  %q' "$BINARY" --lab-diagnostics "$@"
+printf '\n\n'
+exec "$BINARY" --lab-diagnostics "$@"

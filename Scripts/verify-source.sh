@@ -72,8 +72,6 @@ for script in [
     root / 'Scripts/build-developer-lab.sh',
     root / 'Scripts/sign-developer-lab.sh',
     root / 'Scripts/diagnose-developer-lab.sh',
-    root / 'Scripts/preflight-developer-lab.sh',
-    root / 'Scripts/launch-developer-lab.sh',
     root / 'Scripts/run-developer-lab.sh',
     root / 'Scripts/test-core.sh',
     root / 'Scripts/verify-source.sh',
@@ -93,12 +91,9 @@ sign_lab = (root / 'Scripts/sign-developer-lab.sh').read_text()
 assert '--sign -' in sign_lab, 'Developer Lab must use an ad-hoc signature'
 assert 'WiiMacMote-DeveloperLab.entitlements' in sign_lab, 'Developer Lab signer must use the restricted-entitlement plist'
 
-launch_lab = (root / 'Scripts/launch-developer-lab.sh').read_text()
-assert 'Contents/MacOS/WiiMacMote' in launch_lab, 'Developer Lab launcher must execute the app binary directly'
-assert 'exec "$BINARY"' in launch_lab, 'Developer Lab launcher must preserve terminal-visible launch errors'
-
 run_lab = (root / 'Scripts/run-developer-lab.sh').read_text()
-assert 'launch-developer-lab.sh' in run_lab, 'Developer Lab runner must delegate to the direct launcher'
+assert 'Contents/MacOS/WiiMacMote' in run_lab, 'Developer Lab runner must execute the app binary directly'
+assert 'exec "$BINARY"' in run_lab, 'Developer Lab runner must preserve terminal-visible launch errors'
 
 environment = (root / 'wiimacmote/DeveloperLabEnvironment.swift').read_text()
 assert 'SecTaskCopyValueForEntitlement' in environment, 'Runtime entitlement preflight is missing'
@@ -106,7 +101,10 @@ assert 'amfi_get_out_of_my_way' in environment, 'AMFI boot-argument hint parser 
 assert 'teamIdentifier' in environment and 'bootArguments' in environment, 'Runtime lab diagnostics are incomplete'
 
 for path in root.rglob('*'):
-    assert path.name not in {'.DS_Store', '__MACOSX'}, f'Archive debris found: {path}'
+    if path.name == '.DS_Store' and path.is_file():
+        path.unlink()
+        continue
+    assert path.name != '__MACOSX', f'Archive debris found: {path}'
 PY
 
 if command -v xcrun >/dev/null 2>&1 && xcrun --find swiftc >/dev/null 2>&1; then

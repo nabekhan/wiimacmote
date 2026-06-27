@@ -213,6 +213,99 @@ enum WiimoteMotionPlusMode: UInt8, Sendable {
     }
 }
 
+enum WiimoteRemoteKind: String, Codable, Sendable {
+    case standard
+    case motionPlusInside
+    case balanceBoard
+    case unknown
+
+    init(name: String?, productID: Int?) {
+        let normalizedName = (name ?? "").uppercased()
+        if normalizedName.contains("RVL-WBC") {
+            self = .balanceBoard
+        } else if productID == 0x0330 || normalizedName.contains("RVL-CNT-01-TR") {
+            self = .motionPlusInside
+        } else if productID == 0x0306 || normalizedName.contains("RVL-CNT-01") || normalizedName.contains("WIIMOTE") {
+            self = .standard
+        } else {
+            self = .unknown
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .standard: return "Wii Remote"
+        case .motionPlusInside: return "Wii Remote Plus"
+        case .balanceBoard: return "Wii Fit Balance Board"
+        case .unknown: return "Unknown Wii Controller"
+        }
+    }
+}
+
+enum WiimoteMotionPlusCapability: String, Codable, Sendable {
+    case unknown
+    case absent
+    case accessoryPresent
+    case insidePresent
+    case activeStandalone
+    case activeNunchukPassthrough
+    case activeClassicPassthrough
+
+    init(remoteKind: WiimoteRemoteKind) {
+        self = remoteKind == .motionPlusInside ? .insidePresent : .unknown
+    }
+
+    init?(identifier: [UInt8], remoteKind: WiimoteRemoteKind) {
+        switch identifier {
+        case [0x00, 0x00, 0xA4, 0x20, 0x00, 0x05]: self = .insidePresent
+        case [0x00, 0x00, 0xA6, 0x20, 0x00, 0x05],
+             [0x01, 0x00, 0xA6, 0x20, 0x00, 0x05]: self = .accessoryPresent
+        case [0x00, 0x00, 0xA4, 0x20, 0x04, 0x05],
+             [0x00, 0x00, 0xA6, 0x20, 0x04, 0x05],
+             [0x01, 0x00, 0xA6, 0x20, 0x04, 0x05]: self = .activeStandalone
+        case [0x00, 0x00, 0xA4, 0x20, 0x05, 0x05],
+             [0x00, 0x00, 0xA6, 0x20, 0x05, 0x05],
+             [0x01, 0x00, 0xA6, 0x20, 0x05, 0x05]: self = .activeNunchukPassthrough
+        case [0x00, 0x00, 0xA4, 0x20, 0x07, 0x05],
+             [0x00, 0x00, 0xA6, 0x20, 0x07, 0x05],
+             [0x01, 0x00, 0xA6, 0x20, 0x07, 0x05]: self = .activeClassicPassthrough
+        default:
+            if remoteKind == .motionPlusInside {
+                self = .insidePresent
+            } else {
+                return nil
+            }
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .unknown: return "MotionPlus unknown"
+        case .absent: return "No MotionPlus"
+        case .accessoryPresent: return "MotionPlus accessory detected"
+        case .insidePresent: return "MotionPlus inside"
+        case .activeStandalone: return "MotionPlus active"
+        case .activeNunchukPassthrough: return "MotionPlus + Nunchuk active"
+        case .activeClassicPassthrough: return "MotionPlus + Classic active"
+        }
+    }
+
+    var isKnownPresent: Bool {
+        switch self {
+        case .accessoryPresent, .insidePresent, .activeStandalone, .activeNunchukPassthrough, .activeClassicPassthrough:
+            return true
+        case .unknown, .absent:
+            return false
+        }
+    }
+}
+
+enum WiimoteIdentifierFormatter {
+    static func hexString(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+}
+
 enum WiimoteOutputReports {
     static func rumble(enabled: Bool) -> WiimoteOutputReport {
         WiimoteOutputReport(
@@ -719,6 +812,7 @@ enum WiimoteExtensionKind: Equatable, Sendable {
     case motionPlusClassicPassthrough
     case guitar
     case drums
+    case tatacon
     case unknown(identifier: [UInt8])
 
     init(identifier: [UInt8]) {
@@ -738,8 +832,15 @@ enum WiimoteExtensionKind: Equatable, Sendable {
              [0x00, 0x00, 0xA6, 0x20, 0x07, 0x05]: self = .motionPlusClassicPassthrough
         case [0x00, 0x00, 0xA4, 0x20, 0x01, 0x03]: self = .guitar
         case [0x01, 0x00, 0xA4, 0x20, 0x01, 0x03]: self = .drums
+        case [0x00, 0x00, 0xA4, 0x20, 0x01, 0x11]: self = .tatacon
         default: self = .unknown(identifier: identifier)
         }
+    }
+
+    static func identifierLooksInvalid(_ identifier: [UInt8]) -> Bool {
+        guard identifier.count >= 6 else { return true }
+        return identifier.prefix(6).allSatisfy { $0 == 0x00 } ||
+            identifier.prefix(6).allSatisfy { $0 == 0xFF }
     }
 
     var displayName: String {
@@ -747,13 +848,14 @@ enum WiimoteExtensionKind: Equatable, Sendable {
         case .nunchuk: return "Nunchuk"
         case .classicController: return "Classic Controller"
         case .classicControllerPro: return "Classic Controller Pro"
-        case .balanceBoard: return "Balance Board"
+        case .balanceBoard: return "Wii Fit Balance Board"
         case .motionPlusInactive: return "MotionPlus inactive"
         case .motionPlusActive: return "MotionPlus"
         case .motionPlusNunchukPassthrough: return "MotionPlus + Nunchuk"
         case .motionPlusClassicPassthrough: return "MotionPlus + Classic"
         case .guitar: return "Guitar Controller"
         case .drums: return "Drums Controller"
+        case .tatacon: return "TaTaCon Drum"
         case .unknown: return "Unknown Extension"
         }
     }
@@ -779,13 +881,24 @@ enum WiimoteExtensionKind: Equatable, Sendable {
             return false
         }
     }
+
+    var isMotionPlusPassthrough: Bool {
+        switch self {
+        case .motionPlusNunchukPassthrough, .motionPlusClassicPassthrough:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 enum WiimoteExtensionInput: Equatable, Sendable {
     case nunchuk(WiimoteNunchukInput)
     case classicController(WiimoteClassicControllerInput)
+    case guitar(WiimoteGuitarInput)
     case motionPlus(WiimoteMotionPlusInput)
     case balanceBoard(WiimoteBalanceBoardInput)
+    case tatacon(WiimoteTataconInput)
     case raw(kind: WiimoteExtensionKind, bytes: [UInt8])
 
     static func decode(_ bytes: [UInt8], kind: WiimoteExtensionKind?) -> WiimoteExtensionInput? {
@@ -795,6 +908,8 @@ enum WiimoteExtensionInput: Equatable, Sendable {
             return WiimoteNunchukInput(bytes: bytes).map { .nunchuk($0) }
         case .classicController, .classicControllerPro:
             return WiimoteClassicControllerInput(bytes: bytes).map { .classicController($0) }
+        case .guitar:
+            return WiimoteGuitarInput(bytes: bytes).map { .guitar($0) }
         case .motionPlusActive, .motionPlusInactive:
             return WiimoteMotionPlusInput(bytes: bytes).map { .motionPlus($0) }
         case .motionPlusNunchukPassthrough:
@@ -809,7 +924,9 @@ enum WiimoteExtensionInput: Equatable, Sendable {
             return WiimoteClassicControllerInput(passthroughBytes: bytes).map { .classicController($0) }
         case .balanceBoard:
             return WiimoteBalanceBoardInput(bytes: bytes).map { .balanceBoard($0) }
-        case .guitar, .drums, .unknown:
+        case .tatacon:
+            return WiimoteTataconInput(bytes: bytes).map { .tatacon($0) }
+        case .drums, .unknown:
             return .raw(kind: kind ?? .unknown(identifier: []), bytes: bytes)
         case .none:
             return .raw(kind: .unknown(identifier: []), bytes: bytes)
@@ -825,10 +942,14 @@ enum WiimoteExtensionInput: Equatable, Sendable {
             return "Stick \(input.stickX),\(input.stickY)" + (buttons.isEmpty ? "" : " · \(buttons)")
         case .classicController(let input):
             return "LX \(input.leftX) LY \(input.leftY) · \(input.buttons.labels.joined(separator: "+"))"
+        case .guitar(let input):
+            return "Stick \(input.stickX),\(input.stickY) · \(input.buttons.labels.joined(separator: "+")) · whammy \(input.whammyPercent)%"
         case .motionPlus(let input):
             return "Yaw \(input.yaw) Roll \(input.roll) Pitch \(input.pitch)"
         case .balanceBoard(let input):
             return "Raw weight \(input.sensors.total)"
+        case .tatacon(let input):
+            return input.buttons.labels.isEmpty ? "No hits" : input.buttons.labels.joined(separator: "+")
         case .raw(let kind, let bytes):
             return "\(kind.displayName) · \(bytes.count) raw bytes"
         }
@@ -955,6 +1076,79 @@ struct WiimoteClassicControllerInput: Equatable, Sendable {
         if (byte5 & 0x02) == 0 { buttons.insert(.dpadLeft) }
         if (byte5 & 0x01) == 0 { buttons.insert(.dpadUp) }
         return buttons
+    }
+}
+
+struct WiimoteGuitarButtons: OptionSet, Hashable, Sendable {
+    let rawValue: UInt16
+
+    static let strumUp = WiimoteGuitarButtons(rawValue: 0x0001)
+    static let yellow = WiimoteGuitarButtons(rawValue: 0x0008)
+    static let green = WiimoteGuitarButtons(rawValue: 0x0010)
+    static let blue = WiimoteGuitarButtons(rawValue: 0x0020)
+    static let red = WiimoteGuitarButtons(rawValue: 0x0040)
+    static let orange = WiimoteGuitarButtons(rawValue: 0x0080)
+    static let plus = WiimoteGuitarButtons(rawValue: 0x0400)
+    static let minus = WiimoteGuitarButtons(rawValue: 0x1000)
+    static let strumDown = WiimoteGuitarButtons(rawValue: 0x4000)
+    static let buttonMask: UInt16 = 0xFEFF
+
+    var labels: [String] {
+        let ordered: [(WiimoteGuitarButtons, String)] = [
+            (.green, "Green"), (.red, "Red"), (.yellow, "Yellow"), (.blue, "Blue"), (.orange, "Orange"),
+            (.strumUp, "Strum Up"), (.strumDown, "Strum Down"),
+            (.plus, "+"), (.minus, "-")
+        ]
+        return ordered.compactMap { contains($0.0) ? $0.1 : nil }
+    }
+}
+
+struct WiimoteGuitarInput: Equatable, Sendable {
+    let stickX: UInt8
+    let stickY: UInt8
+    let whammyRaw: UInt8
+    let whammy: Double
+    let buttons: WiimoteGuitarButtons
+
+    var whammyPercent: Int {
+        Int((whammy * 100).rounded())
+    }
+
+    init?(bytes: [UInt8]) {
+        guard bytes.count >= 6 else { return nil }
+        self.stickX = bytes[0]
+        self.stickY = bytes[1]
+        self.whammyRaw = bytes[3]
+        self.whammy = ((Double(bytes[3]) - 0xEF) / Double(0xFA - 0xEF)).clamped(to: 0...1)
+        let activeLowButtons = ~((UInt16(bytes[4]) << 8) | UInt16(bytes[5]))
+        self.buttons = WiimoteGuitarButtons(rawValue: activeLowButtons & WiimoteGuitarButtons.buttonMask)
+    }
+}
+
+struct WiimoteTataconButtons: OptionSet, Hashable, Sendable {
+    let rawValue: UInt8
+
+    static let centerLeft = WiimoteTataconButtons(rawValue: 0x40)
+    static let centerRight = WiimoteTataconButtons(rawValue: 0x10)
+    static let rimLeft = WiimoteTataconButtons(rawValue: 0x20)
+    static let rimRight = WiimoteTataconButtons(rawValue: 0x08)
+    static let buttonMask: UInt8 = 0x78
+
+    var labels: [String] {
+        let ordered: [(WiimoteTataconButtons, String)] = [
+            (.centerLeft, "Center Left"), (.centerRight, "Center Right"),
+            (.rimLeft, "Rim Left"), (.rimRight, "Rim Right")
+        ]
+        return ordered.compactMap { contains($0.0) ? $0.1 : nil }
+    }
+}
+
+struct WiimoteTataconInput: Equatable, Sendable {
+    let buttons: WiimoteTataconButtons
+
+    init?(bytes: [UInt8]) {
+        guard bytes.count >= 6 else { return nil }
+        self.buttons = WiimoteTataconButtons(rawValue: (~bytes[5]) & WiimoteTataconButtons.buttonMask)
     }
 }
 

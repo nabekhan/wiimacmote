@@ -1,5 +1,5 @@
+import Darwin
 import Foundation
-import Network
 
 struct DiagnosticDSURumbleCommand {
     let slot: Int
@@ -29,8 +29,13 @@ final class DiagnosticDSUServer {
         let payload: [UInt8]
     }
 
+    private struct ClientKey: Hashable {
+        let address: UInt32
+        let port: UInt16
+    }
+
     private struct ClientState {
-        let connection: NWConnection
+        let address: sockaddr_in
         var subscriptions = Set<Subscription>()
         var packetCounter: UInt32 = 0
         var lastSeen = Date()
@@ -40,8 +45,9 @@ final class DiagnosticDSUServer {
     private let port: UInt16
     private let serverID = UInt32.random(in: 1...UInt32.max)
     private let queue = DispatchQueue(label: "dev.wiimacmote.diagnostics.dsu")
-    private var listener: NWListener?
-    private var clients: [UUID: ClientState] = [:]
+    private var socketFD: Int32 = -1
+    private var readSource: DispatchSourceRead?
+    private var clients: [ClientKey: ClientState] = [:]
     private var controllers: [Int: ControllerRuntimeSnapshot] = [:]
     private var isRunning = false
     private var sendTimer: DispatchSourceTimer?
@@ -69,144 +75,160 @@ final class DiagnosticDSUServer {
     }
 
     private func startOnQueue() {
-        guard listener == nil else {
+        guard socketFD < 0 else {
             notifyState(error: nil)
             return
         }
-        guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
-            notifyState(isRunning: false, error: "Invalid DSU port \(port).")
+
+        let fd = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else {
+            notifyState(isRunning: false, error: socketError("socket"))
             return
         }
 
-        let parameters = NWParameters.udp
-        parameters.allowLocalEndpointReuse = true
+        var reuse: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
 
-        do {
-            let listener = try NWListener(using: parameters, on: endpointPort)
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.accept(connection)
-            }
-            listener.stateUpdateHandler = { [weak self] state in
-                self?.handleListenerState(state)
-            }
-            self.listener = listener
-            listener.start(queue: queue)
-            startSendTimer()
-        } catch {
-            notifyState(isRunning: false, error: error.localizedDescription)
+        let flags = fcntl(fd, F_GETFL, 0)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
         }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.bind(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            let error = socketError("bind")
+            Darwin.close(fd)
+            notifyState(isRunning: false, error: error)
+            return
+        }
+
+        socketFD = fd
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        source.setEventHandler { [weak self] in
+            self?.receiveAvailableDatagrams()
+        }
+        readSource = source
+        source.resume()
+
+        isRunning = true
+        notifyState(error: nil)
+        startSendTimer()
     }
 
     private func stopOnQueue() {
         sendTimer?.cancel()
         sendTimer = nil
-        listener?.cancel()
-        listener = nil
-        for client in clients.values {
-            client.connection.cancel()
+
+        readSource?.cancel()
+        readSource = nil
+        if socketFD >= 0 {
+            Darwin.close(socketFD)
+            socketFD = -1
         }
+
         clients.removeAll()
         isRunning = false
         notifyState(isRunning: false, error: nil)
     }
 
-    private func handleListenerState(_ state: NWListener.State) {
-        switch state {
-        case .ready:
-            isRunning = true
-            notifyState(error: nil)
-        case .failed(let error):
-            isRunning = false
-            listener = nil
-            notifyState(isRunning: false, error: error.localizedDescription)
-        case .cancelled:
-            isRunning = false
-            notifyState(isRunning: false, error: nil)
-        default:
-            break
+    private func receiveAvailableDatagrams() {
+        guard socketFD >= 0 else { return }
+
+        while true {
+            var buffer = [UInt8](repeating: 0, count: 2048)
+            var storage = sockaddr_storage()
+            var storageLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
+
+            let count = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+                guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+                return withUnsafeMutablePointer(to: &storage) { storagePointer in
+                    storagePointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                        Darwin.recvfrom(socketFD, baseAddress, rawBuffer.count, 0, sockaddrPointer, &storageLength)
+                    }
+                }
+            }
+
+            if count > 0 {
+                handleDatagram(Array(buffer.prefix(count)), from: storage)
+            } else if count == 0 {
+                return
+            } else {
+                let errorCode = errno
+                if errorCode == EWOULDBLOCK || errorCode == EAGAIN {
+                    return
+                }
+                notifyState(error: socketError("recvfrom", code: errorCode))
+                return
+            }
         }
     }
 
-    private func accept(_ connection: NWConnection) {
-        guard isLoopback(connection.endpoint) else {
-            connection.cancel()
+    private func handleDatagram(_ data: [UInt8], from storage: sockaddr_storage) {
+        guard let (key, address) = clientEndpoint(from: storage),
+              let packet = parsePacket(Data(data)) else {
             return
         }
 
-        let id = UUID()
-        clients[id] = ClientState(connection: connection)
-        connection.stateUpdateHandler = { [weak self] state in
-            self?.handleConnectionState(state, id: id)
-        }
-        connection.start(queue: queue)
-        receive(from: connection, id: id)
-        notifyState(error: nil)
-    }
-
-    private func isLoopback(_ endpoint: NWEndpoint) -> Bool {
-        guard case .hostPort(let host, _) = endpoint else { return false }
-        switch host {
-        case .ipv4(let address):
-            return address == .loopback
-        case .ipv6(let address):
-            return address == .loopback
-        case .name(let name, _):
-            let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return normalized == "localhost"
-        @unknown default:
-            return false
-        }
-    }
-
-    private func handleConnectionState(_ state: NWConnection.State, id: UUID) {
-        switch state {
-        case .failed, .cancelled:
-            clients[id] = nil
+        if clients[key] == nil {
+            clients[key] = ClientState(address: address)
             notifyState(error: nil)
-        default:
-            break
+        }
+        clients[key]?.lastSeen = Date()
+        handle(packet, from: key)
+    }
+
+    private func clientEndpoint(from storage: sockaddr_storage) -> (ClientKey, sockaddr_in)? {
+        var storage = storage
+        return withUnsafePointer(to: &storage) { storagePointer in
+            storagePointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { addressPointer -> (ClientKey, sockaddr_in)? in
+                let address = addressPointer.pointee
+                guard Int32(address.sin_family) == AF_INET else { return nil }
+                let hostAddress = UInt32(bigEndian: address.sin_addr.s_addr)
+                guard (hostAddress & 0xFF00_0000) == 0x7F00_0000 else { return nil }
+                return (
+                    ClientKey(address: address.sin_addr.s_addr, port: UInt16(bigEndian: address.sin_port)),
+                    address
+                )
+            }
         }
     }
 
-    private func receive(from connection: NWConnection, id: UUID) {
-        connection.receiveMessage { [weak self] data, _, _, error in
-            guard let self else { return }
-            if let data, let packet = self.parsePacket(data) {
-                self.clients[id]?.lastSeen = Date()
-                self.handle(packet, from: id)
-            }
-
-            if error == nil, self.clients[id] != nil {
-                self.receive(from: connection, id: id)
-            } else {
-                self.clients[id] = nil
-                self.notifyState(error: nil)
-            }
-        }
-    }
-
-    private func handle(_ packet: ParsedPacket, from clientID: UUID) {
+    private func handle(_ packet: ParsedPacket, from clientKey: ClientKey) {
         switch packet.messageType {
         case MessageType.protocolVersion:
-            sendPacket(messageType: packet.messageType, payload: littleEndian(UInt16(1001)), to: clientID)
+            sendPacket(
+                messageType: packet.messageType,
+                payload: littleEndian(UInt16(1001)) + [0, 0],
+                to: clientKey
+            )
 
         case MessageType.controllerInfo:
             let slots = requestedInfoSlots(packet.payload)
             for slot in slots {
-                sendPacket(messageType: packet.messageType, payload: controllerInfoPayload(slot: slot), to: clientID)
+                sendPacket(messageType: packet.messageType, payload: controllerInfoPayload(slot: slot), to: clientKey)
             }
 
         case MessageType.controllerData:
-            subscribe(clientID: clientID, payload: packet.payload)
-            sendSubscribedControllerData(to: clientID)
+            subscribe(clientKey: clientKey, payload: packet.payload)
+            sendSubscribedControllerData(to: clientKey)
 
         case MessageType.motorInfo:
             for slot in targetSlots(fromIdentifierPayload: packet.payload) {
-                sendPacket(messageType: packet.messageType, payload: motorInfoPayload(slot: slot), to: clientID)
+                sendPacket(messageType: packet.messageType, payload: motorInfoPayload(slot: slot), to: clientKey)
             }
 
         case MessageType.rumble:
-            handleRumble(packet.payload, from: clientID)
+            handleRumble(packet.payload, from: clientKey)
 
         default:
             break
@@ -220,11 +242,11 @@ final class DiagnosticDSUServer {
         return slots.isEmpty ? Array(0..<4) : slots
     }
 
-    private func subscribe(clientID: UUID, payload: [UInt8]) {
-        guard var client = clients[clientID] else { return }
+    private func subscribe(clientKey: ClientKey, payload: [UInt8]) {
+        guard var client = clients[clientKey] else { return }
         client.subscriptions.insert(subscription(fromIdentifierPayload: payload))
         client.lastSeen = Date()
-        clients[clientID] = client
+        clients[clientKey] = client
         notifyState(error: nil)
     }
 
@@ -253,18 +275,18 @@ final class DiagnosticDSUServer {
         }
     }
 
-    private func handleRumble(_ payload: [UInt8], from clientID: UUID) {
+    private func handleRumble(_ payload: [UInt8], from clientKey: ClientKey) {
         guard payload.count >= 10 else { return }
         let intensity = payload[9]
         let slots = targetSlots(fromIdentifierPayload: Array(payload.prefix(8)))
         guard !slots.isEmpty else { return }
 
-        if var client = clients[clientID] {
+        if var client = clients[clientKey] {
             let deadline = Date().addingTimeInterval(5)
             for slot in slots {
                 client.rumbleDeadlines[slot] = intensity == 0 ? nil : deadline
             }
-            clients[clientID] = client
+            clients[clientKey] = client
         }
 
         for slot in slots {
@@ -287,16 +309,16 @@ final class DiagnosticDSUServer {
 
     private func sendTick() {
         let now = Date()
-        for id in Array(clients.keys) {
-            guard var client = clients[id] else { continue }
+        for key in Array(clients.keys) {
+            guard var client = clients[key] else { continue }
             if now.timeIntervalSince(client.lastSeen) > 5 {
                 for slot in client.rumbleDeadlines.keys {
                     DispatchQueue.main.async { [weak self] in
                         self?.onRumble?(DiagnosticDSURumbleCommand(slot: slot, intensity: 0))
                     }
                 }
-                client.connection.cancel()
-                clients[id] = nil
+                clients[key] = nil
+                notifyState(error: nil)
                 continue
             }
 
@@ -307,21 +329,21 @@ final class DiagnosticDSUServer {
                 }
             }
 
-            clients[id] = client
-            sendSubscribedControllerData(to: id)
+            clients[key] = client
+            sendSubscribedControllerData(to: key)
         }
     }
 
-    private func sendSubscribedControllerData(to clientID: UUID) {
-        guard var client = clients[clientID], !client.subscriptions.isEmpty else { return }
+    private func sendSubscribedControllerData(to clientKey: ClientKey) {
+        guard var client = clients[clientKey], !client.subscriptions.isEmpty else { return }
         let slots = subscribedSlots(for: client)
         for slot in slots {
             guard let controller = controllers[slot] else { continue }
             let payload = controllerDataPayload(controller, packetCounter: client.packetCounter)
             client.packetCounter &+= 1
-            sendPacket(messageType: MessageType.controllerData, payload: payload, to: clientID)
+            sendPacket(messageType: MessageType.controllerData, payload: payload, to: clientKey)
         }
-        clients[clientID] = client
+        clients[clientKey] = client
     }
 
     private func subscribedSlots(for client: ClientState) -> [Int] {
@@ -342,14 +364,14 @@ final class DiagnosticDSUServer {
     }
 
     private func controllerInfoPayload(slot: Int) -> [UInt8] {
-        guard let controller = controllers[slot] else { return Array(repeating: 0, count: 12) }
+        guard let controller = controllers[slot] else { return disconnectedControllerHeader(slot: slot) + [0] }
         var payload = sharedControllerHeader(controller)
         payload.append(0)
         return payload
     }
 
     private func motorInfoPayload(slot: Int) -> [UInt8] {
-        guard let controller = controllers[slot] else { return Array(repeating: 0, count: 12) }
+        guard let controller = controllers[slot] else { return disconnectedControllerHeader(slot: slot) + [0] }
         var payload = sharedControllerHeader(controller)
         payload.append(1)
         return payload
@@ -395,10 +417,10 @@ final class DiagnosticDSUServer {
         payload.append(dpad.down ? 255 : 0)
         payload.append(dpad.right ? 255 : 0)
         payload.append(dpad.up ? 255 : 0)
-        payload.append(contains(.north, in: buttons) ? 255 : 0)
-        payload.append(contains(.east, in: buttons) ? 255 : 0)
-        payload.append(contains(.south, in: buttons) ? 255 : 0)
         payload.append(contains(.west, in: buttons) ? 255 : 0)
+        payload.append(contains(.south, in: buttons) ? 255 : 0)
+        payload.append(contains(.east, in: buttons) ? 255 : 0)
+        payload.append(contains(.north, in: buttons) ? 255 : 0)
         payload.append(contains(.rightShoulder, in: buttons) ? 255 : 0)
         payload.append(contains(.leftShoulder, in: buttons) ? 255 : 0)
         payload.append(contains(.rightTrigger, in: buttons) ? 255 : 0)
@@ -426,10 +448,32 @@ final class DiagnosticDSUServer {
         return payload
     }
 
-    private func sendPacket(messageType: UInt32, payload: [UInt8], to clientID: UUID) {
-        guard let client = clients[clientID] else { return }
+    private func disconnectedControllerHeader(slot: Int) -> [UInt8] {
+        [UInt8(slot.clamped(to: 0...3)), 0, 0, 0] + Array(repeating: 0, count: 7)
+    }
+
+    private func sendPacket(messageType: UInt32, payload: [UInt8], to clientKey: ClientKey) {
+        guard socketFD >= 0, var address = clients[clientKey]?.address else { return }
         let packet = buildPacket(messageType: messageType, payload: payload)
-        client.connection.send(content: packet, completion: .contentProcessed { _ in })
+        let result = packet.withUnsafeBytes { rawBuffer -> Int in
+            guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+            return withUnsafePointer(to: &address) { addressPointer in
+                addressPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                    Darwin.sendto(
+                        socketFD,
+                        baseAddress,
+                        rawBuffer.count,
+                        0,
+                        sockaddrPointer,
+                        socklen_t(MemoryLayout<sockaddr_in>.size)
+                    )
+                }
+            }
+        }
+
+        if result < 0 {
+            notifyState(error: socketError("sendto"))
+        }
     }
 
     func buildPacket(messageType: UInt32, payload: [UInt8]) -> Data {
@@ -452,7 +496,7 @@ final class DiagnosticDSUServer {
               bytes[1] == UInt8(ascii: "S"),
               bytes[2] == UInt8(ascii: "U"),
               bytes[3] == UInt8(ascii: "C"),
-              uint16LE(bytes, offset: 4) == 1001,
+              (uint16LE(bytes, offset: 4) ?? 0) <= 1001,
               let length = uint16LE(bytes, offset: 6),
               length >= 4 else {
             return nil
@@ -481,6 +525,10 @@ final class DiagnosticDSUServer {
         DispatchQueue.main.async { [weak self] in
             self?.onStateChanged?(isRunning, clientCount, error)
         }
+    }
+
+    private func socketError(_ operation: String, code: Int32 = errno) -> String {
+        "DSU UDP \(operation) failed: \(String(cString: strerror(code)))."
     }
 }
 

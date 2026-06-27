@@ -9,6 +9,7 @@ WiiMacMote discovers, pairs, reads, and translates Nintendo Wii Remote input on 
 - Dedicated serial queues for Bluetooth HID input and virtual output.
 - Up to four remotes with player LEDs, battery estimate, rumble, status refresh, report-rate diagnostics, buttons, and accelerometer data.
 - Wii protocol builders/parsers for memory/register reads and writes, EEPROM calibration, IR points, speaker reports, Nunchuk, Classic Controller, MotionPlus, and Balance Board packets.
+- Wiiuse-derived extension identity and input handling for broader compatibility, including Guitar and TaTaCon parser coverage.
 - Local DSU/Cemuhook UDP output on `127.0.0.1:26760` for emulator-compatible controller data and rumble.
 - Native macOS Settings-style controller UI with grouped panes, sidebar navigation, and original vector controller artwork.
 - Sideways and upright mappings, plus optional filtered tilt-to-right-stick input.
@@ -44,7 +45,8 @@ The Standard scheme deliberately omits `com.apple.developer.hid.virtual.device`.
 | Speaker | Initialization/data/mute builders are implemented; disconnect mutes and disables it |
 | Nunchuk, Classic Controller, MotionPlus | Extension init, identity detection, and input decoding are implemented |
 | Balance Board | Device matching, extension init, calibration read, packet decoding, and weight interpolation are implemented |
-| Guitar/drums/other extensions | Identified when possible, exposed as raw extension bytes |
+| Guitar and TaTaCon | Wiiuse-derived identifier and input decoding are implemented |
+| Drums/other extensions | Identified when possible, exposed as raw extension bytes |
 
 Command-line checks:
 
@@ -98,7 +100,7 @@ Both backends are governed by the same restricted-entitlement boundary. CoreHID 
 
 ## Pairing guidance
 
-Use the red SYNC button. Holding 1 + 2 or pressing other normal buttons uses a different legacy connection path and is less reliable, especially with `-TR` remotes. If macOS shows a Bluetooth **Connection Request** dialog, cancel it and press red SYNC instead; that dialog is BluetoothUIServer handling non-SYNC connection mode outside WiiMacMote's binary-PIN path. The Scan toggle keeps discovery enabled and recreates Classic inquiry after that interruption. Already-paired remotes are opened directly. If Classic inquiry returns `0xE00002E2`, the app logs CoreBluetooth state, bundle path, and entitlement visibility because that value is `kIOReturnNotPermitted` from macOS, not a Wii packet error. After two pairing failures, WiiMacMote pauses instead of repeatedly hammering the Bluetooth service.
+Use the red SYNC button for first pairing. Holding 1 + 2 or pressing other normal buttons uses a different legacy connection path and is less reliable before pairing, especially with `-TR` remotes. If macOS shows a Bluetooth **Connection Request** dialog before pairing is complete, cancel it and press red SYNC instead; that dialog is BluetoothUIServer handling non-SYNC connection mode outside WiiMacMote's binary-PIN path. If red-SYNC pairing succeeds but HID does not appear, keep Scan on, power the remote off, then wake the now-saved remote with any normal button instead of pressing SYNC again. The Scan toggle keeps discovery enabled and recreates Classic inquiry after interruptions. Already-paired remotes are opened directly. If Classic inquiry returns `0xE00002E2`, the app logs CoreBluetooth state, bundle path, and entitlement visibility because that value is `kIOReturnNotPermitted` from macOS, not a Wii packet error. After two pairing failures, WiiMacMote pauses instead of repeatedly hammering the Bluetooth service.
 
 For local copied/ad-hoc installs, macOS may deny Classic Bluetooth until the installed app bundle has a fresh local signature. Quit WiiMacMote, run this for the app you launch, then start it again:
 
@@ -120,6 +122,7 @@ This is a development workaround for local app identity/TCC state. Release build
 - `DeveloperLabEnvironment.swift` — runtime entitlement visibility and AMFI boot-argument diagnostics.
 - `DEVELOPER_LAB.md` — restricted-entitlement local test procedure and validation ladder.
 - `THIRD_PARTY_NOTICES.md` — source attribution and license notices.
+- `LICENSE` — GPL-3.0-or-later marker for distributions that include Wiiuse-derived protocol behavior.
 
 ## Distribution boundary
 

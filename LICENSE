@@ -1,0 +1,16 @@
+WiiMacMote is distributed under the GNU General Public License, version 3
+or any later version, for source and binary distributions that include the
+Wiiuse-derived protocol behavior in this repository.
+
+SPDX-License-Identifier: GPL-3.0-or-later
+
+This repository contains Swift code adapted from or based on behavior in
+Wiiuse, which is licensed under GPL-3.0-or-later. Recipients may copy,
+modify, and redistribute the covered work under GPL version 3 or, at their
+option, any later version published by the Free Software Foundation.
+
+The full GPL version 3 text is available at:
+
+https://www.gnu.org/licenses/gpl-3.0.txt
+
+There is no warranty for this program, to the extent permitted by law.

@@ -1,5 +1,18 @@
 # Third-party notices
 
+## Wiiuse
+
+The Wii Remote protocol, extension identity, MotionPlus capability, and expansion parser behavior in `WiimoteProtocol.swift` and `WiimoteHIDController.swift` include Swift adaptations of concepts and constants from Wiiuse:
+
+- Project: Wiiuse
+- Repository: https://github.com/wiiuse/wiiuse
+- Primary original author: Michael Laforest
+- Additional MotionPlus authors credited by Wiiuse: Michal Wiedenbauer, Dave Murphy, Hector Martin, and Radu Andries
+- TaTaCon support credited by Wiiuse to pixelomer
+- License: GPL-3.0-or-later
+
+This project ports selected behavior from Wiiuse's `wiiuse.h`, `wiiuse_internal.h`, `events.c`, `wiiuse.c`, `io.c`, `motion_plus.c`, `guitar_hero_3.c`, `nunchuk.c`, `classic.c`, and `tatacon.c` into Swift while keeping WiiMacMote's macOS HID/Bluetooth transport separate. Because this code is derived from GPL-licensed Wiiuse behavior, WiiMacMote distributions that include it must satisfy GPL-3.0-or-later obligations. See `LICENSE`.
+
 ## WaveBird
 
 The Xbox Series and Switch Pro virtual presentation work in `VirtualGamepadReports.swift`, and the CoreHID publication pattern in `VirtualGamepad.swift`, were adapted from research and MIT-licensed source in:

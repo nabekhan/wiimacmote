@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 private enum TestFailure: Error, CustomStringConvertible {
@@ -29,16 +30,20 @@ struct CoreTests {
         try testIRReport()
         try testExtensionReport()
         try testExtensionDecoders()
+        try testWiiuseExtensionIdentifiers()
+        try testWiiuseExtensionInputs()
         try testCalibrationDecoders()
         try testMalformedAndInterleavedReports()
         try testUprightMapping()
         try testSidewaysMapping()
+        try testExtensionGamepadMapping()
         try testVirtualIdentitySpecifications()
         try testGenericVirtualReport()
         try testXboxVirtualReports()
         try testSwitchProVirtualReport()
         try testDSUPacketEncoding()
         try testDSUControllerDataPayload()
+        try testDSUUDPInputRequestRoundTrip()
         try testAMFIBootArgumentParser()
         print("All WiiMacMote core tests passed.")
     }
@@ -208,6 +213,61 @@ struct CoreTests {
         try expect(board?.sensors.total == 0x07C3 + 0x3CF8 + 0x048C + 0x296B, "Balance Board raw total is wrong")
     }
 
+    private static func testWiiuseExtensionIdentifiers() throws {
+        try expect(
+            WiimoteRemoteKind(name: "Nintendo RVL-CNT-01-TR", productID: 0x0330) == .motionPlusInside,
+            "RVL-CNT-01-TR should be classified as Wii Remote Plus"
+        )
+        try expect(
+            WiimoteMotionPlusCapability(
+                identifier: [0x00, 0x00, 0xA4, 0x20, 0x00, 0x05],
+                remoteKind: .standard
+            ) == .insidePresent,
+            "Built-in inactive MotionPlus ID should be recognized"
+        )
+        try expect(
+            WiimoteMotionPlusCapability(
+                identifier: [0x00, 0x00, 0xA6, 0x20, 0x00, 0x05],
+                remoteKind: .standard
+            ) == .accessoryPresent,
+            "Accessory inactive MotionPlus ID should be recognized"
+        )
+        try expect(
+            WiimoteMotionPlusCapability(
+                identifier: [0x00, 0x00, 0xA6, 0x20, 0x05, 0x05],
+                remoteKind: .standard
+            ) == .activeNunchukPassthrough,
+            "MotionPlus Nunchuk passthrough ID should be recognized"
+        )
+        try expect(
+            WiimoteExtensionKind(identifier: [0x00, 0x00, 0xA4, 0x20, 0x01, 0x11]) == .tatacon,
+            "TaTaCon identifier should be recognized"
+        )
+        try expect(
+            WiimoteExtensionKind.identifierLooksInvalid([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+            "All-FF extension identifiers should trigger a retry"
+        )
+        try expect(
+            WiimoteIdentifierFormatter.hexString([0x00, 0x00, 0xA4, 0x20, 0x01, 0x11]) == "00 00 A4 20 01 11",
+            "Extension identifier hex formatting is wrong"
+        )
+    }
+
+    private static func testWiiuseExtensionInputs() throws {
+        let guitar = WiimoteGuitarInput(bytes: [0xE0, 0xE0, 0x00, 0xF4, 0xBB, 0xEF])
+        try expect(guitar?.stickX == 0xE0 && guitar?.stickY == 0xE0, "Guitar stick bytes are wrong")
+        try expect(guitar?.buttons.contains(.green) == true, "Guitar green fret should be pressed")
+        try expect(guitar?.buttons.contains(.plus) == true, "Guitar plus should be pressed")
+        try expect(guitar?.buttons.contains(.strumDown) == true, "Guitar strum down should be pressed")
+        try expect(guitar?.buttons.contains(.red) == false, "Guitar red fret should be released")
+        try expect(guitar?.whammyPercent == 45, "Guitar whammy normalization changed")
+
+        let tatacon = WiimoteTataconInput(bytes: [0, 0, 0, 0, 0, 0xB7])
+        try expect(tatacon?.buttons.contains(.centerLeft) == true, "TaTaCon center-left should be pressed")
+        try expect(tatacon?.buttons.contains(.rimRight) == true, "TaTaCon rim-right should be pressed")
+        try expect(tatacon?.buttons.contains(.rimLeft) == false, "TaTaCon rim-left should be released")
+    }
+
     private static func testCalibrationDecoders() throws {
         let calibrationBytes: [UInt8] = [
             0x10, 0x69, 0x00, 0x00,
@@ -266,6 +326,53 @@ struct CoreTests {
         try expect((state.buttons & VirtualGamepadButton.south.mask) != 0, "2 should map south")
         try expect((state.buttons & VirtualGamepadButton.select.mask) != 0, "- should map select")
     }
+
+    private static func testExtensionGamepadMapping() throws {
+        let nunchuk = WiimoteNunchukInput(bytes: [0xFF, 0x00, 0x80, 0x80, 0x80, 0x00])
+        var state = GamepadMapper.map(
+            buttons: [.a],
+            extensionInput: nunchuk.map(WiimoteExtensionInput.nunchuk),
+            profile: .upright,
+            motionRightStick: nil
+        )
+        try expect(state.leftX == 127 && state.leftY == 127, "Nunchuk stick should drive the left stick")
+        try expect((state.buttons & VirtualGamepadButton.leftShoulder.mask) != 0, "Nunchuk C should map to L1")
+        try expect((state.buttons & VirtualGamepadButton.leftTrigger.mask) != 0, "Nunchuk Z should map to L2")
+
+        let classic = WiimoteClassicControllerInput(bytes: [0x20, 0x3F, 0x10, 0x10, 0xFB, 0xAF])
+        state = GamepadMapper.map(
+            buttons: [],
+            extensionInput: classic.map(WiimoteExtensionInput.classicController),
+            profile: .upright,
+            motionRightStick: nil
+        )
+        try expect(state.leftX == 0 && state.leftY == -127, "Classic Controller left stick should map to the left stick")
+        try expect((state.buttons & VirtualGamepadButton.south.mask) != 0, "Classic B should map south")
+        try expect((state.buttons & VirtualGamepadButton.east.mask) != 0, "Classic A should map east")
+        try expect((state.buttons & VirtualGamepadButton.start.mask) != 0, "Classic + should map start")
+
+        let guitar = WiimoteGuitarInput(bytes: [0xE0, 0xE0, 0x00, 0xF4, 0xBB, 0xEF])
+        state = GamepadMapper.map(
+            buttons: [],
+            extensionInput: guitar.map(WiimoteExtensionInput.guitar),
+            profile: .upright,
+            motionRightStick: nil
+        )
+        try expect(state.hat == 4, "Guitar strum down should map to d-pad down")
+        try expect((state.buttons & VirtualGamepadButton.south.mask) != 0, "Guitar green should map south")
+        try expect((state.buttons & VirtualGamepadButton.start.mask) != 0, "Guitar + should map start")
+
+        let tatacon = WiimoteTataconInput(bytes: [0, 0, 0, 0, 0, 0xB7])
+        state = GamepadMapper.map(
+            buttons: [],
+            extensionInput: tatacon.map(WiimoteExtensionInput.tatacon),
+            profile: .upright,
+            motionRightStick: nil
+        )
+        try expect((state.buttons & VirtualGamepadButton.south.mask) != 0, "TaTaCon center-left should map south")
+        try expect((state.buttons & VirtualGamepadButton.north.mask) != 0, "TaTaCon rim-right should map north")
+    }
+
     private static func testVirtualIdentitySpecifications() throws {
         let generic = VirtualGamepadReports.specification(for: .generic, playerIndex: 2)
         try expect(generic.descriptor.count == 71, "Generic descriptor length changed unexpectedly")
@@ -350,13 +457,13 @@ struct CoreTests {
 
     private static func testDSUPacketEncoding() throws {
         let server = DiagnosticDSUServer(port: 26760)
-        let packet = Array(server.buildPacket(messageType: 0x100000, payload: [0xE9, 0x03]))
+        let packet = Array(server.buildPacket(messageType: 0x100000, payload: [0xE9, 0x03, 0, 0]))
 
         try expect(Array(packet.prefix(4)) == Array("DSUS".utf8), "DSU server magic is wrong")
         try expect(uint16LE(packet, offset: 4) == 1001, "DSU protocol version is wrong")
-        try expect(uint16LE(packet, offset: 6) == 6, "DSU packet length should include message type")
+        try expect(uint16LE(packet, offset: 6) == 8, "DSU packet length should include message type and version padding")
         try expect(uint32LE(packet, offset: 16) == 0x100000, "DSU message type is wrong")
-        try expect(Array(packet.suffix(2)) == [0xE9, 0x03], "DSU payload was not preserved")
+        try expect(Array(packet.suffix(4)) == [0xE9, 0x03, 0, 0], "DSU version payload was not preserved")
 
         guard let encodedCRC = uint32LE(packet, offset: 8) else {
             throw TestFailure.failed("DSU CRC field was missing")
@@ -412,8 +519,73 @@ struct CoreTests {
         try expect(payload[18] == 1, "DSU HOME byte is wrong")
         try expect(Array(payload[20...23]) == [255, 255, 1, 1], "DSU stick axes are wrong")
         try expect(payload[26] == 255 && payload[27] == 255, "DSU analog hat directions are wrong")
+        try expect(Array(payload[28...31]) == [0, 255, 255, 0], "DSU analog face-button order is wrong")
         try expect(abs((float32LE(payload, offset: 56) ?? 0) - 1.25) < 0.001, "DSU acceleration X is wrong")
         try expect(abs((float32LE(payload, offset: 68) ?? 0) - 3) < 0.001, "DSU gyro pitch is wrong")
+    }
+
+    private static func testDSUUDPInputRequestRoundTrip() throws {
+        let port = try unusedLocalUDPPort()
+        var state = VirtualGamepadState.neutral
+        state.leftX = 127
+        state.hat = 2
+        state.buttons = VirtualGamepadButton.south.mask | VirtualGamepadButton.start.mask
+
+        let snapshot = ControllerRuntimeSnapshot(
+            id: 0xABCD,
+            slot: 0,
+            name: "Dolphin Round Trip",
+            address: "00:1A:E9:AA:BB:CC",
+            batteryPercent: 100,
+            transport: .bluetooth,
+            gamepadState: state,
+            motion: .neutral,
+            hasFullGyro: false
+        )
+
+        let server = DiagnosticDSUServer(port: port)
+        server.updateControllers([snapshot])
+        server.start()
+        defer { server.stop() }
+        Thread.sleep(forTimeInterval: 0.05)
+
+        let fd = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { throw TestFailure.failed("UDP client socket failed") }
+        defer { Darwin.close(fd) }
+
+        var timeout = timeval(tv_sec: 1, tv_usec: 0)
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let request = dsuClientPacket(messageType: 0x100002, payload: [1, 0, 0, 0, 0, 0, 0, 0])
+        let sent = request.withUnsafeBytes { rawBuffer -> Int in
+            guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+            return withUnsafePointer(to: &address) { addressPointer in
+                addressPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                    Darwin.sendto(fd, baseAddress, rawBuffer.count, 0, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        try expect(sent == request.count, "DSU UDP request send failed")
+
+        var buffer = [UInt8](repeating: 0, count: 256)
+        let received = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+            guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+            return Darwin.recvfrom(fd, baseAddress, rawBuffer.count, 0, nil, nil)
+        }
+        try expect(received >= 100, "DSU UDP input response was not received")
+
+        let response = Array(buffer.prefix(received))
+        try expect(Array(response.prefix(4)) == Array("DSUS".utf8), "DSU UDP response magic is wrong")
+        try expect(uint32LE(response, offset: 16) == 0x100002, "DSU UDP response should be controller data")
+        try expect(response[20] == 0 && response[30] == 0x05 && response[31] == 1, "DSU UDP response header is wrong")
+        try expect(response[36] == 0x28, "DSU UDP response button bitmask is wrong")
+        try expect(response[40] == 255 && response[42] == 128, "DSU UDP response stick axes are wrong")
     }
 
     private static func testAMFIBootArgumentParser() throws {
@@ -460,6 +632,59 @@ struct CoreTests {
         bytes[offset + 1] = UInt8((value >> 8) & 0xFF)
         bytes[offset + 2] = UInt8((value >> 16) & 0xFF)
         bytes[offset + 3] = UInt8((value >> 24) & 0xFF)
+    }
+
+    private static func dsuClientPacket(messageType: UInt32, payload: [UInt8]) -> [UInt8] {
+        var bytes = Array("DSUC".utf8)
+        appendLittleEndian(UInt16(1001), to: &bytes)
+        appendLittleEndian(UInt16(4 + payload.count), to: &bytes)
+        appendLittleEndian(UInt32(0), to: &bytes)
+        appendLittleEndian(UInt32(0x1234_ABCD), to: &bytes)
+        appendLittleEndian(messageType, to: &bytes)
+        bytes.append(contentsOf: payload)
+        let checksum = crc32(bytes)
+        writeLittleEndian(checksum, into: &bytes, at: 8)
+        return bytes
+    }
+
+    private static func appendLittleEndian(_ value: UInt16, to bytes: inout [UInt8]) {
+        bytes.append(UInt8(value & 0xFF))
+        bytes.append(UInt8((value >> 8) & 0xFF))
+    }
+
+    private static func appendLittleEndian(_ value: UInt32, to bytes: inout [UInt8]) {
+        bytes.append(UInt8(value & 0xFF))
+        bytes.append(UInt8((value >> 8) & 0xFF))
+        bytes.append(UInt8((value >> 16) & 0xFF))
+        bytes.append(UInt8((value >> 24) & 0xFF))
+    }
+
+    private static func unusedLocalUDPPort() throws -> UInt16 {
+        let fd = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { throw TestFailure.failed("UDP probe socket failed") }
+        defer { Darwin.close(fd) }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let bindResult = withUnsafePointer(to: &address) { addressPointer in
+            addressPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.bind(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        try expect(bindResult == 0, "UDP probe bind failed")
+
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &address) { addressPointer in
+            addressPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.getsockname(fd, sockaddrPointer, &length)
+            }
+        }
+        try expect(nameResult == 0, "UDP probe getsockname failed")
+        return UInt16(bigEndian: address.sin_port)
     }
 
     private static func crc32(_ bytes: [UInt8]) -> UInt32 {

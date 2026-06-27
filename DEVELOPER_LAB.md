@@ -52,7 +52,7 @@ Re-sign an existing app:
   build/DeveloperLabDerivedData/Build/Products/DeveloperLab/WiiMacMote.app
 ```
 
-Run host/signature diagnostics (`preflight-developer-lab.sh` is an alias):
+Run host/signature diagnostics:
 
 ```sh
 ./Scripts/diagnose-developer-lab.sh \
@@ -62,13 +62,13 @@ Run host/signature diagnostics (`preflight-developer-lab.sh` is an alias):
 Launch the app binary directly, preserving Terminal output:
 
 ```sh
-./Scripts/launch-developer-lab.sh -- \
+./Scripts/run-developer-lab.sh --no-build -- \
   --enable-virtual-gamepad \
   --profile xbox-series \
   --backend iohid
 ```
 
-Use `--force` on the launcher only when the diagnostic script cannot read the boot argument but you have independently verified the isolated lab configuration.
+Use `--force` only when the diagnostic script cannot read the boot argument but you have independently verified the isolated lab configuration.
 
 Inspect the embedded entitlement manually:
 
@@ -96,7 +96,7 @@ A commonly used lab configuration includes the boot argument:
 amfi_get_out_of_my_way=0x1
 ```
 
-The included preflight script only checks for that token and prints `csrutil status`; it does not set either one. Boot arguments and Startup Security behavior vary by Mac model and macOS release, so use current Apple recovery/security documentation for the specific test machine rather than letting an app automate those changes.
+The included diagnostic script only checks for that token and prints `csrutil status`; it does not set either one. Boot arguments and Startup Security behavior vary by Mac model and macOS release, so use current Apple recovery/security documentation for the specific test machine rather than letting an app automate those changes.
 
 ## Runtime status and failure meanings
 

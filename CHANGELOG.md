@@ -18,14 +18,18 @@
 - Exposed the virtual-output environment status in Standard and Developer Lab builds while keeping the restricted entitlement isolated to the lab signing path.
 - Added Wii protocol builders/parsers for read/write memory/register reports, read-data responses, speaker reports, IR initialization/points, EEPROM accelerometer calibration, extension initialization/identity, Nunchuk, Classic Controller, MotionPlus, and Balance Board calibration/input.
 - Replaced the localhost diagnostic WebSocket with a DSU/Cemuhook UDP server on `127.0.0.1:26760`, backed by generic controller snapshots and slot-based rumble handling.
+- Changed the DSU server to reply with endpoint-addressed UDP datagrams compatible with Dolphin's separate discovery and input-request sockets.
+- Added Wiiuse-derived Remote Plus/MotionPlus capability classification, Guitar and TaTaCon extension parsing, unstable extension-ID retries, and a separate Saved Extensions section.
+- Changed the bundle identifier to `com.nabekhan.WiiMacMote` and kept Developer Lab isolated as `com.nabekhan.WiiMacMote.DeveloperLab`.
+- Added pairing recovery guidance for the common first-pair HID stall: after red-SYNC pairing succeeds, power-cycle the remote and wake the saved remote with a normal button while Scan remains on.
 - Expanded portable core tests for protocol builders, memory reads, IR points, extension decoders, and calibration parsing.
 
 ## 2.0.5 — Explicit local AMFI developer path
 
 - Clarified that the Developer Lab path uses only an explicit local ad-hoc signature.
 - Changed the command-line Developer Lab build to compile with signing disabled, then apply an explicit ad-hoc signature containing `com.apple.developer.hid.virtual.device`.
-- Added `run-developer-lab.sh` plus `launch-developer-lab.sh` to build/sign and execute the app binary directly so AMFI, dyld, and IOKit failures remain visible in Terminal.
-- Added `diagnose-developer-lab.sh` (with a `preflight-developer-lab.sh` alias) to verify the app signature/entitlement and print SIP plus AMFI boot-argument hints without changing host security.
+- Added `run-developer-lab.sh` to build/sign and execute the app binary directly so AMFI, dyld, and IOKit failures remain visible in Terminal.
+- Added `diagnose-developer-lab.sh` to verify the app signature/entitlement and print SIP plus AMFI boot-argument hints without changing host security.
 - Added runtime `SecTaskCopyValueForEntitlement` diagnostics and a `kern.bootargs` AMFI-hint check in the app banner and diagnostic log.
 - Improved virtual-device creation errors to distinguish a missing runtime entitlement from an IOKit/CoreHID failure after the entitlement is visible.
 - Made `IOHIDUserDevice` the default backend for a fresh Developer Lab preference domain while preserving CoreHID as a comparison backend.

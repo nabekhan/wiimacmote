@@ -6,6 +6,8 @@ A Wii Remote is a Bluetooth Classic HID device. Red-SYNC pairing uses a six-byte
 
 The HID layer uses one dispatch-backed `IOHIDManager`, installs callbacks before activation, retains callback lifetime through asynchronous cancellation, and publishes immutable UI snapshots at a limited rate. Report parsing, memory/register report builders, extension decoders, and mapping remain independent from IOKit so they can be tested on any Swift host.
 
+Selected Wiiuse protocol behavior is now ported into Swift for compatibility: extension identity constants, MotionPlus/Remote Plus capability classification, unstable extension-ID retry behavior, and Guitar/TaTaCon input interpretation. WiiMacMote still keeps the macOS transport native instead of embedding Wiiuse's C platform layer.
+
 Disconnect is intentionally a quiet-and-close sequence rather than a fake power command. The Wii Remote protocol documents host shutdown as closing the L2CAP/HID connection; WiiMacMote first mutes/disables speaker output, disables IR, clears LEDs, and forces rumble off before closing HID and the Classic Bluetooth connection.
 
 Useful references:

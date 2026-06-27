@@ -41,7 +41,7 @@ The deterministic command-line path intentionally separates compilation from sig
 ./Scripts/run-developer-lab.sh
 ```
 
-`build-developer-lab.sh` passes `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and an empty signing identity so Xcode never asks for an Apple team or provisioning profile. It then invokes `sign-developer-lab.sh`, which applies a local ad-hoc signature containing the entitlement, followed by `diagnose-developer-lab.sh`. `run-developer-lab.sh` delegates to `launch-developer-lab.sh`, which executes the bundle binary directly.
+`build-developer-lab.sh` passes `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and an empty signing identity so Xcode never asks for an Apple team or provisioning profile. It then invokes `sign-developer-lab.sh`, which applies a local ad-hoc signature containing the entitlement, followed by `diagnose-developer-lab.sh`. `run-developer-lab.sh` executes the bundle binary directly so AMFI, dyld, and IOKit errors remain visible in Terminal.
 
 To reapply the signature to a built app:
 

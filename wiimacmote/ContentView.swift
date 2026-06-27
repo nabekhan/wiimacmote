@@ -6,6 +6,15 @@ struct ContentView: View {
     @State private var selectedSection: SettingsSection? = .controllers
     @State private var savedRemotePendingRemoval: SavedWiimoteSnapshot?
 
+    private struct SavedExtensionDisplayRow: Identifiable, Equatable {
+        let id: String
+        let name: String
+        let identifierHex: String
+        let remoteName: String
+        let remoteAddress: String
+        let lastSeen: Date
+    }
+
     var body: some View {
         NavigationSplitView {
             sidebar
@@ -91,6 +100,8 @@ struct ContentView: View {
                     }
                 }
             }
+
+            savedExtensionsSection
         }
     }
 
@@ -212,7 +223,7 @@ struct ContentView: View {
             settingsSection("Pairing") {
                 instructionRow(
                     title: "Use red SYNC",
-                    message: "Press the red SYNC button behind the battery cover. If macOS shows a Connection Request dialog after pressing another button, cancel it and WiiMacMote will continue scanning."
+                    message: "Press the red SYNC button behind the battery cover for first pairing. If pairing succeeds but HID does not appear, power the remote off, then wake it with any normal button while Scan remains on. Cancel macOS Connection Request dialogs from non-SYNC buttons before pairing is complete."
                 )
                 rowDivider()
                 HStack(spacing: 8) {
@@ -227,6 +238,13 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
+            }
+
+            settingsSection("Controller Ownership") {
+                settingsRow(title: "Prefer WiiMacMote", detail: "Attempts to claim exclusive HID access before apps like Dolphin can seize an already-paired remote.") {
+                    Toggle("", isOn: $manager.exclusiveHIDAccessEnabled)
+                        .labelsHidden()
+                }
             }
         }
     }
@@ -296,7 +314,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("No Game Controllers")
                         .font(.title3.weight(.semibold))
-                    Text("Turn on Scan, then press the red SYNC button behind the Wii Remote battery cover. Avoid normal buttons during pairing; macOS handles those as a system Bluetooth connection request.")
+                    Text("Turn on Scan, then press the red SYNC button behind the Wii Remote battery cover. After a successful pair, if HID does not appear, power the remote off and wake it with a normal button so the saved remote reconnects.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 8) {
@@ -314,8 +332,8 @@ struct ContentView: View {
     private func connectedControllerSection(_ wiimote: ConnectedWiimoteSnapshot) -> some View {
         settingsSection(wiimote.name.isEmpty ? "Wii Remote" : wiimote.name) {
             HStack(alignment: .center, spacing: 22) {
-                ControllerArtwork(kind: artworkKind(for: wiimote), active: true)
-                    .frame(width: 132, height: 190)
+                connectedControllerArtwork(wiimote)
+                    .frame(width: 170, height: 190)
                     .padding(.leading, 4)
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -323,6 +341,8 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Player \(wiimote.playerIndex)")
                                 .font(.title3.weight(.semibold))
+                            Text(controllerTypeText(wiimote))
+                                .font(.callout.weight(.medium))
                             Text(wiimote.address ?? String(format: "Product 0x%04X", wiimote.productID))
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
@@ -355,6 +375,10 @@ struct ContentView: View {
             rowDivider()
             controllerMetricRow("Last Report", wiimote.reportID.map { String(format: "0x%02X", $0) } ?? "None")
             rowDivider()
+            controllerMetricRow("Remote Type", wiimote.remoteKind.title)
+            rowDivider()
+            controllerMetricRow("MotionPlus", wiimote.motionPlusCapability.title)
+            rowDivider()
             controllerMetricRow("Motion", accelerationText(wiimote.acceleration))
             rowDivider()
             controllerMetricRow("Extension Motion", accelerationText(wiimote.extensionAcceleration))
@@ -386,6 +410,9 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(remote.name)
+                    .font(.body.weight(.medium))
+                Text(savedControllerTypeText(remote))
+                    .font(.caption.weight(.medium))
                 Text(remote.address)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
@@ -406,6 +433,67 @@ struct ContentView: View {
             Button("Forget", role: .destructive) {
                 savedRemotePendingRemoval = remote
             }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var savedExtensionsSection: some View {
+        let rows = savedExtensionRows
+        if !rows.isEmpty {
+            settingsSection("Saved Extensions") {
+                ForEach(rows) { extensionRow in
+                    savedExtensionRow(extensionRow)
+                    if extensionRow.id != rows.last?.id {
+                        rowDivider()
+                    }
+                }
+            }
+        }
+    }
+
+    private var savedExtensionRows: [SavedExtensionDisplayRow] {
+        manager.savedWiimotes
+            .flatMap { remote in
+                remote.extensions.map { extensionSnapshot in
+                    SavedExtensionDisplayRow(
+                        id: extensionSnapshot.id,
+                        name: extensionSnapshot.name,
+                        identifierHex: extensionSnapshot.identifierHex,
+                        remoteName: remote.name,
+                        remoteAddress: remote.address,
+                        lastSeen: extensionSnapshot.lastSeen
+                    )
+                }
+            }
+            .sorted {
+                if $0.lastSeen != $1.lastSeen {
+                    return $0.lastSeen > $1.lastSeen
+                }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+    }
+
+    private func savedExtensionRow(_ extensionRow: SavedExtensionDisplayRow) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "puzzlepiece.extension")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 42, height: 42)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(extensionRow.name)
+                    .font(.body.weight(.medium))
+                Text(extensionRow.identifierHex)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Text("Last seen with \(extensionRow.remoteName) · \(extensionRow.remoteAddress)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -739,6 +827,9 @@ struct ContentView: View {
     private func extensionText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
         guard wiimote.extensionConnected else { return "Not detected" }
         var parts = [wiimote.extensionName ?? "Initializing"]
+        if let identifier = wiimote.extensionIdentifierHex {
+            parts.append(identifier)
+        }
         if let detail = wiimote.extensionDetail, !detail.isEmpty {
             parts.append(detail)
         }
@@ -766,12 +857,49 @@ struct ContentView: View {
             .joined(separator: "  ")
     }
 
-    private func artworkKind(for wiimote: ConnectedWiimoteSnapshot) -> ControllerArtwork.Kind {
+    private func controllerTypeText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
+        if wiimote.remoteKind == .balanceBoard {
+            return wiimote.remoteKind.title
+        }
+
+        var parts = [wiimote.remoteKind.title]
+        if let extensionName = wiimote.extensionName,
+           !extensionName.lowercased().contains("motionplus") {
+            parts.append(extensionName)
+        }
+        if wiimote.motionPlusCapability.isKnownPresent,
+           !parts.contains(where: { $0.lowercased().contains("motionplus") || $0.lowercased().contains("remote plus") }) {
+            parts.append("MotionPlus")
+        }
+        return parts.joined(separator: " + ")
+    }
+
+    private func savedControllerTypeText(_ remote: SavedWiimoteSnapshot) -> String {
+        remote.remoteKind.title
+    }
+
+    @ViewBuilder
+    private func connectedControllerArtwork(_ wiimote: ConnectedWiimoteSnapshot) -> some View {
+        if wiimote.remoteKind == .balanceBoard || extensionArtworkKind(for: wiimote) == .balanceBoard {
+            ControllerArtwork(kind: .balanceBoard, active: true)
+        } else {
+            HStack(alignment: .center, spacing: 4) {
+                ControllerArtwork(kind: .remote, active: true)
+                    .frame(width: 78, height: 170)
+                if let extensionKind = extensionArtworkKind(for: wiimote) {
+                    ControllerArtwork(kind: extensionKind, active: true)
+                        .frame(width: 78, height: 150)
+                }
+            }
+        }
+    }
+
+    private func extensionArtworkKind(for wiimote: ConnectedWiimoteSnapshot) -> ControllerArtwork.Kind? {
         let name = (wiimote.extensionName ?? "").lowercased()
         if name.contains("balance") { return .balanceBoard }
         if name.contains("classic") { return .classicController }
         if name.contains("nunchuk") { return .nunchuk }
-        return .remote
+        return nil
     }
 
     private func diagnosticColor(for level: String) -> Color {
