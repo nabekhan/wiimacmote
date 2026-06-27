@@ -1,8 +1,9 @@
 # WiiMacMote
 
+- WARNING: Mac OS does not allow for virtual HID creation unless the app is signed with appropriate permissions or SIP is disabled. This application is a proof of concept and is only useful for pairing Wii peripherals to modern Mac OS for other applications that natively support them such as Dolphin, or use with software that support generic devices including BTT, etc.
+
 ![Screenshot](screenshot.png "Screenshot")
 
-- Warning: Mac OS does not allow for virtual HID creation unless the app is signed with appropriate permissions or SIP is disabled. This is only useful for pairing Wii remotes for other applications that natively support it such as Dolphin, or use with BTT, etc.
 - macOS app for Nintendo Wii Remotes.
 - Pairs with the red SYNC button.
 - Reads buttons, battery, LEDs, rumble, accelerometer, IR, MotionPlus, and common extensions.
