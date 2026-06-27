@@ -239,13 +239,6 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
             }
-
-            settingsSection("Controller Ownership") {
-                settingsRow(title: "Prefer WiiMacMote", detail: "Attempts to claim exclusive HID access before apps like Dolphin can seize an already-paired remote.") {
-                    Toggle("", isOn: $manager.exclusiveHIDAccessEnabled)
-                        .labelsHidden()
-                }
-            }
         }
     }
 
