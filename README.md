@@ -1,6 +1,6 @@
 # WiiMacMote
 
-WiiMacMote is a macOS utility for pairing and checking Nintendo Wii controllers over Bluetooth.
+WiiMacMote is a macOS utility for pairing Nintendo Wii controllers over Bluetooth.
 
 ![Screenshot](screenshot.png "Screenshot")
 
