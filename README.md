@@ -1,48 +1,59 @@
 # WiiMacMote
 
-- WARNING: Mac OS does not allow for virtual HID creation unless the app is signed with appropriate permissions or SIP is disabled. This application is a proof of concept and is only useful for pairing Wii peripherals to modern Mac OS for other applications that natively support them such as Dolphin, or use with software that support generic devices including BTT, etc.
+WiiMacMote is a macOS utility for pairing and checking Nintendo Wii controllers over Bluetooth.
 
 ![Screenshot](screenshot.png "Screenshot")
 
-- macOS app for Nintendo Wii Remotes.
-- Pairs new controllers with the red SYNC button and reconnects saved Wii Remotes from face buttons.
-- Reads buttons, battery, LEDs, rumble, accelerometer, IR, MotionPlus, and common extensions.
-- Supports Wii Remote, Wii Remote Plus, Nunchuk, Classic Controller, Balance Board, Guitar, and TaTaCon paths.
-- Virtual HID output is experimental and requires Apple-restricted entitlement/signing support or SIP disabled.
+## Features
+
+- Pairs new Wii Remotes using the red SYNC button.
+- Reconnects saved Wii Remotes and Wii Fit Balance Boards from macOS Bluetooth.
+- Shows active controllers first, including buttons, battery, player LEDs, rumble, MotionPlus capability, and extension status.
+- Tracks saved controllers and saved extensions with local Forget controls.
+- Provides a Bluetooth page for pairing controls, current status, and diagnostic logs.
 
 ## Requirements
 
 - macOS 14 or newer.
 - Xcode 16 or newer.
 - Bluetooth-capable Mac.
-- Nintendo Wii Remote and/or Peripherals
+- Nintendo Wii Remote, Wii Remote Plus, Wii Fit Balance Board, or compatible Wii extension.
 
 ## Build
 
 - Open `WiiMacMote.xcodeproj`.
-- Select `WiiMacMote` and `My Mac`.
-- Build and run.
+- Select the `WiiMacMote` scheme and `My Mac` destination.
+- Build and run from Xcode.
 - Or run `./Scripts/build.sh`.
-- Local copied apps may need fresh ad-hoc signing for macOS Bluetooth permission.
-- Sign the installed app with `codesign --force --deep --sign - /Applications/WiiMacMote.app`.
-- Or run `./Scripts/build.sh --sign-installed`.
-- Run checks with `./Scripts/verify-source.sh`.
+- Run source checks with `./Scripts/verify-source.sh`.
 
-## Pair
+Local copied apps may need fresh ad-hoc signing for macOS Bluetooth permission:
 
+```sh
+codesign --force --deep --sign - /Applications/WiiMacMote.app
+```
+
+You can also run:
+
+```sh
+./Scripts/build.sh --sign-installed
+```
+
+## Pairing
+
+- Open the Bluetooth section.
 - Turn on `Scan`.
-- Press the red SYNC button behind the battery cover for first pairing.
-- For saved Wii Remotes, press a face button such as `1` or `2` while `Scan` is on.
-- Press the button again if the remote turns off or the LEDs stop blinking.
-- Connection can take a moment.
-- Cancel macOS `Connection Request` prompts from face-button presses until the remote is saved.
+- For a new Wii Remote, press the red SYNC button behind the battery cover.
+- For a saved Wii Remote, press a face button such as `1` or `2` while scanning is on.
+- For a Wii Fit Balance Board, press its power button while scanning is on.
+- Connection can take a moment while macOS exposes the HID service.
 
+## Controllers
 
-## Virtual Output
-
-- Standard builds are proof of concept for physical Wii Remote input and DSU output.
-- System-wide virtual HID output may fail without `com.apple.developer.hid.virtual.device`.
-- Local testing helper: `./Scripts/run-developer-lab.sh`.
+- Active controller cards appear at the top of the Controllers section.
+- Saved Controllers lists macOS-paired Wii controllers and provides Forget for removing the Bluetooth pairing.
+- Saved Extensions lists locally remembered extension records and provides Forget for removing only the saved app record.
 
 ## References
+
 - https://github.com/wiiuse/wiiuse
