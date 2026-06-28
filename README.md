@@ -6,11 +6,9 @@ WiiMacMote is a macOS utility for pairing and checking Nintendo Wii controllers 
 
 ## Features
 
-- Pairs new Wii Remotes using the red SYNC button.
-- Reconnects saved Wii Remotes and Wii Fit Balance Boards from macOS Bluetooth.
+- Pairs new Wii peripherals using the red SYNC button.
+- Reconnects saved devices from macOS Bluetooth.
 - Shows active controllers first, including buttons, battery, player LEDs, rumble, MotionPlus capability, and extension status.
-- Tracks saved controllers and saved extensions with local Forget controls.
-- Provides a Bluetooth page for pairing controls, current status, and diagnostic logs.
 
 ## Requirements
 
@@ -43,16 +41,10 @@ You can also run:
 
 - Open the Bluetooth section.
 - Turn on `Scan`.
-- For a new Wii Remote, press the red SYNC button behind the battery cover.
-- For a saved Wii Remote, press a face button such as `1` or `2` while scanning is on.
-- For a Wii Fit Balance Board, press its power button while scanning is on.
+- For a new Wii peripheral, press the red SYNC button behind the battery cover.
+- For a saved Wii remote, press a face button such as `1` or `2` while scanning is on.
+- For a saved Wii Fit Balance Board, press its power button while scanning is on.
 - Connection can take a moment while macOS exposes the HID service.
-
-## Controllers
-
-- Active controller cards appear at the top of the Controllers section.
-- Saved Controllers lists macOS-paired Wii controllers and provides Forget for removing the Bluetooth pairing.
-- Saved Extensions lists locally remembered extension records and provides Forget for removing only the saved app record.
 
 ## References
 
