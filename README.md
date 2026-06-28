@@ -5,7 +5,7 @@
 ![Screenshot](screenshot.png "Screenshot")
 
 - macOS app for Nintendo Wii Remotes.
-- Pairs with the red SYNC button.
+- Pairs new controllers with the red SYNC button and reconnects saved Wii Remotes from face buttons.
 - Reads buttons, battery, LEDs, rumble, accelerometer, IR, MotionPlus, and common extensions.
 - Supports Wii Remote, Wii Remote Plus, Nunchuk, Classic Controller, Balance Board, Guitar, and TaTaCon paths.
 - Virtual HID output is experimental and requires Apple-restricted entitlement/signing support or SIP disabled.
@@ -32,9 +32,10 @@
 
 - Turn on `Scan`.
 - Press the red SYNC button behind the battery cover for first pairing.
-- Cancel macOS `Connection Request` prompts from normal buttons.
-- After first pairing, wake a saved remote with any normal button.
-- If HID stalls after pairing, keep `Scan` on, power the remote off, then wake it with a normal button.
+- For saved Wii Remotes, press a face button such as `1` or `2` while `Scan` is on.
+- Press the button again if the remote turns off or the LEDs stop blinking.
+- Connection can take a moment.
+- Cancel macOS `Connection Request` prompts from face-button presses until the remote is saved.
 
 
 ## Virtual Output

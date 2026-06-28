@@ -88,7 +88,7 @@ enum WiimoteAppPhase: Equatable {
         case .idle: return "Ready"
         case .scanning: return "Scanning for a Wii Remote…"
         case .pairing(let name, let attempt): return "Pairing \(name) · attempt \(attempt)"
-        case .waitingForHID(let name): return "Waiting for \(name) to expose HID… If it stalls, power it off and wake it with a normal button."
+        case .waitingForHID(let name): return "Waiting for \(name) to expose HID… Connection can take a moment."
         case .connected(let count): return "\(count) Wii Remote\(count == 1 ? "" : "s") connected"
         case .bluetoothOff: return "Bluetooth is turned off"
         case .permissionDenied: return "Bluetooth permission is denied"
@@ -375,7 +375,7 @@ final class WiimoteManager: NSObject, ObservableObject {
         if wiimotes.isEmpty {
             phase = .scanning
         }
-        diagnostics.append("🔍", "Classic Bluetooth inquiry started. Press the red SYNC button; cancel macOS Connection Request prompts from other buttons.")
+        diagnostics.append("🔍", "Classic Bluetooth inquiry started. New controllers: press red SYNC. Saved Wii Remotes: press a face button; press it again if LEDs stop blinking.")
     }
 
     func stopScanning() {
@@ -935,7 +935,7 @@ final class WiimoteManager: NSObject, ObservableObject {
             pairingCooldowns[address] = nil
             phase = .waitingForHID(name: name)
             diagnostics.append("✅", "Pairing succeeded; waiting for the HID service.")
-            diagnostics.append("ℹ", "If HID does not appear, power the remote off, then wake it with any normal button while Scan remains on. The saved remote should reconnect without pressing SYNC again.")
+            diagnostics.append("ℹ", "Connection can take a moment. If HID does not appear and the LEDs stop blinking, press a face button again while Scan remains on. Use red SYNC only to pair from scratch.")
 
             if !device.isConnected() {
                 let openResult = device.openConnection()
@@ -993,24 +993,27 @@ final class WiimoteManager: NSObject, ObservableObject {
             let recovery = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.hidWaitRecoveryWorkItem = nil
-                self.hidWaitWorkItem?.cancel()
-                self.hidWaitWorkItem = nil
                 guard self.wiimotes.count == countBefore else { return }
 
-                if let device = IOBluetoothDevice(addressString: address), device.isConnected() {
-                    let closeResult = device.closeConnection()
-                    if closeResult == kIOReturnSuccess {
-                        self.diagnostics.append("ℹ", "HID did not appear for \(name); closed the stale Bluetooth connection. Power the remote off, then wake it with any normal button while Scan remains on.")
-                    } else {
-                        self.diagnostics.append("⚠", "HID recovery close returned \(self.hex(closeResult)) for \(name).")
-                    }
-                } else {
-                    self.diagnostics.append("ℹ", "HID did not appear for \(name); resuming scan. Power the remote off, then wake it with any normal button while Scan remains on.")
-                }
+                self.diagnostics.append(
+                    "ℹ",
+                    "HID did not appear for \(name); waiting 1 second before sending the Wiiuse-style Bluetooth disconnect."
+                )
 
-                self.phase = self.automaticScanning ? .scanning : .idle
-                self.refreshSavedWiimotes()
-                self.resumeScanning(after: 0.75)
+                let disconnect = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    self.hidWaitRecoveryWorkItem = nil
+                    self.hidWaitWorkItem?.cancel()
+                    self.hidWaitWorkItem = nil
+                    guard self.wiimotes.count == countBefore else { return }
+
+                    self.sendUnreadyBluetoothDisconnect(name: name, address: address)
+                    self.phase = self.automaticScanning ? .scanning : .idle
+                    self.refreshSavedWiimotes()
+                    self.resumeScanning(after: 0.75)
+                }
+                self.hidWaitRecoveryWorkItem = disconnect
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: disconnect)
             }
             hidWaitRecoveryWorkItem = recovery
             DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: recovery)
@@ -1025,12 +1028,42 @@ final class WiimoteManager: NSObject, ObservableObject {
             self.phase = .error("\(name) paired, but its HID connection did not appear.")
             self.diagnostics.append(
                 "",
-                "Pairing completed without a HID match. Power the remote off, then wake it with any normal button while Scan remains on. Use red SYNC only if you need to pair from scratch again."
+                "Pairing completed without a HID match. Keep Scan on; press a face button again if the remote turned off or its LEDs stopped blinking. Use red SYNC only if you need to pair from scratch again."
             )
             self.resumeScanning(after: 1)
         }
         hidWaitWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: work)
+    }
+
+    private func sendUnreadyBluetoothDisconnect(name: String, address: String) {
+        guard let device = IOBluetoothDevice(addressString: address) else {
+            diagnostics.append(
+                "⚠",
+                "Could not send Wiiuse-style Bluetooth disconnect for \(name); saved address \(address) no longer resolves."
+            )
+            return
+        }
+
+        let wasConnected = device.isConnected()
+        diagnostics.append(
+            "ℹ",
+            "Sending Wiiuse-style Bluetooth disconnect to uninitialized \(name) at \(address): closeConnection()."
+        )
+        let closeResult = device.closeConnection()
+        if closeResult == kIOReturnSuccess {
+            diagnostics.append(
+                "✅",
+                "Bluetooth disconnect sent to \(name); keep Scan on and press a face button again if the remote turns off or its LEDs stop blinking."
+            )
+        } else if !wasConnected {
+            diagnostics.append(
+                "ℹ",
+                "Bluetooth disconnect for \(name) returned \(hex(closeResult)); the device was already disconnected. Keep Scan on and press a face button again if its LEDs stop blinking."
+            )
+        } else {
+            diagnostics.append("⚠", "Bluetooth disconnect for \(name) returned \(hex(closeResult)).")
+        }
     }
 
     private func resumeScanning(after delay: TimeInterval) {

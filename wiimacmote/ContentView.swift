@@ -86,7 +86,7 @@ struct ContentView: View {
                 settingsSection {
                     emptyRow(
                         title: "No saved Wii Remotes",
-                        message: "Pair with the red SYNC button to add a controller to this list.",
+                        message: "Pair new controllers with red SYNC. Saved Wii Remotes reconnect from face buttons while Scan is on.",
                         systemImage: "gamecontroller"
                     )
                 }
@@ -222,8 +222,8 @@ struct ContentView: View {
 
             settingsSection("Pairing") {
                 instructionRow(
-                    title: "Use red SYNC",
-                    message: "Press the red SYNC button behind the battery cover for first pairing. If pairing succeeds but HID does not appear, power the remote off, then wake it with any normal button while Scan remains on. Cancel macOS Connection Request dialogs from non-SYNC buttons before pairing is complete."
+                    title: "New and Saved Controllers",
+                    message: "For a new Wii Remote, turn on Scan and press the red SYNC button behind the battery cover. For a saved Wii Remote, turn on Scan and press a face button such as 1 or 2; press it again if the remote turns off or the LEDs stop blinking. Connection can take a moment. Cancel macOS Connection Request dialogs from face-button presses until the remote is saved."
                 )
                 rowDivider()
                 HStack(spacing: 8) {
@@ -307,7 +307,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("No Game Controllers")
                         .font(.title3.weight(.semibold))
-                    Text("Turn on Scan, then press the red SYNC button behind the Wii Remote battery cover. After a successful pair, if HID does not appear, power the remote off and wake it with a normal button so the saved remote reconnects.")
+                    Text("Turn on Scan. For a new Wii Remote, press red SYNC behind the battery cover. For a saved Wii Remote, press a face button such as 1 or 2; press it again if the remote turns off or the LEDs stop blinking. Connection can take a moment.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 8) {
@@ -419,7 +419,7 @@ struct ContentView: View {
             if remote.isConnected {
                 Button("Disconnect") { manager.disconnectSavedWiimote(address: remote.address) }
             } else {
-                Text("Turn on Scan to reconnect")
+                Text(remote.remoteKind == .balanceBoard ? "Scan, then press Power" : "Scan, then press a face button")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -504,38 +504,31 @@ struct ContentView: View {
     }
 
     private var diagnosticLog: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(manager.diagnostics.entries) { entry in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Image(systemName: entry.symbolName)
-                                .frame(width: 16)
-                                .foregroundStyle(diagnosticColor(for: entry.level))
-                            Text(entry.time, format: .dateTime.hour().minute().second())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 72, alignment: .leading)
-                            Text(entry.level)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 72, alignment: .leading)
-                            Text(entry.message)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .font(.caption.monospaced())
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .id(entry.id)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(manager.diagnostics.entries.reversed()) { entry in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: entry.symbolName)
+                            .frame(width: 16)
+                            .foregroundStyle(diagnosticColor(for: entry.level))
+                        Text(entry.time, format: .dateTime.hour().minute().second())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 72, alignment: .leading)
+                        Text(entry.level)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 72, alignment: .leading)
+                        Text(entry.message)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .font(.caption.monospaced())
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(minHeight: 260, maxHeight: 380)
-            .onChange(of: manager.diagnostics.entries.count) { _, _ in
-                guard let last = manager.diagnostics.entries.last else { return }
-                proxy.scrollTo(last.id, anchor: .bottom)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(minHeight: 260, maxHeight: 380)
     }
 
     private func settingsPage<Content: View>(
@@ -709,7 +702,7 @@ struct ContentView: View {
 
     private var controllerSubtitle: String {
         if manager.wiimotes.isEmpty {
-            return manager.isScanning ? "Searching for Wii Remotes in red-SYNC mode." : "No connected Wii Remote."
+            return manager.isScanning ? "Searching for new red-SYNC and saved controllers." : "No connected Wii Remote."
         }
         return "Customize and monitor connected controllers."
     }
@@ -723,9 +716,9 @@ struct ContentView: View {
         case .error:
             return "Review Diagnostics for the exact Bluetooth or HID result."
         case .scanning:
-            return "Listening for red-SYNC pairing and saved controllers."
+            return "Listening for red SYNC and saved controller button presses."
         case .pairing, .waitingForHID:
-            return "Keep the controller nearby until a player light remains on."
+            return "Connection can take a moment; wait for a player light to stay on."
         case .connected:
             return manager.isScanning ? "Connected and continuing discovery." : "Connected."
         case .starting:
