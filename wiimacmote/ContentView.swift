@@ -12,6 +12,7 @@ struct ContentView: View {
         let identifierHex: String
         let remoteName: String
         let remoteAddress: String
+        let isConnected: Bool
         let lastSeen: Date
     }
 
@@ -47,7 +48,7 @@ struct ContentView: View {
             }
         }
         .navigationTitle("WiiMacMote")
-        .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 280)
+        .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
     }
 
     @ViewBuilder
@@ -55,175 +56,25 @@ struct ContentView: View {
         switch selectedSection ?? .controllers {
         case .controllers:
             controllersPage
-        case .savedControllers:
-            savedControllersPage
-        case .output:
-            outputPage
         case .bluetooth:
             bluetoothPage
-        case .diagnostics:
-            diagnosticsPage
         }
     }
 
     private var controllersPage: some View {
-        settingsPage(title: "Game Controllers", subtitle: controllerSubtitle) {
-            if manager.wiimotes.isEmpty {
-                emptyControllerSection
-            } else {
-                ForEach(manager.wiimotes) { wiimote in
-                    connectedControllerSection(wiimote)
-                }
-            }
-
-            connectionSection
-        }
-    }
-
-    private var savedControllersPage: some View {
-        settingsPage(title: "Saved Controllers", subtitle: "Controllers remembered by macOS Bluetooth.") {
-            if manager.savedWiimotes.isEmpty {
-                settingsSection {
-                    emptyRow(
-                        title: "No saved Wii Remotes",
-                        message: "Pair new controllers with red SYNC. Saved Wii Remotes reconnect from face buttons while Scan is on.",
-                        systemImage: "gamecontroller"
-                    )
-                }
-            } else {
-                settingsSection("Saved Wii Remotes") {
-                    ForEach(manager.savedWiimotes) { remote in
-                        savedControllerRow(remote)
-                        if remote.id != manager.savedWiimotes.last?.id {
-                            rowDivider()
-                        }
-                    }
-                }
-            }
-
+        settingsPage(title: "Controllers", subtitle: controllerSubtitle) {
+            activeControllersSection
+            controllerListSection
             savedExtensionsSection
         }
     }
 
-    private var outputPage: some View {
-        settingsPage(title: "Output", subtitle: "Experimental virtual controller publication and input mapping.") {
-            settingsSection("Virtual Controller") {
-                settingsRow(title: "Create Virtual Gamepad", detail: "Publishes a user-space virtual HID controller when macOS accepts the entitlement and signature.") {
-                    Toggle("", isOn: $manager.virtualGamepadEnabled)
-                        .labelsHidden()
-                }
-                rowDivider()
-                settingsRow(title: "Controller Identity", detail: manager.virtualGamepadIdentity.detail) {
-                    Picker("Controller Identity", selection: $manager.virtualGamepadIdentity) {
-                        ForEach(VirtualGamepadIdentity.allCases) { identity in
-                            Text(identity.title + (identity.isRecommended ? " - Recommended" : ""))
-                                .tag(identity)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 210)
-                    .disabled(!manager.virtualGamepadEnabled)
-                }
-                rowDivider()
-                settingsRow(title: "Publication Backend", detail: manager.virtualGamepadBackendPreference.detail) {
-                    Picker("Publication Backend", selection: $manager.virtualGamepadBackendPreference) {
-                        ForEach(VirtualGamepadBackendPreference.allCases) { backend in
-                            Text(backend.title).tag(backend)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 210)
-                    .disabled(!manager.virtualGamepadEnabled)
-                }
-            }
-
-            settingsSection("Mapping") {
-                settingsRow(title: "Button Profile", detail: manager.controllerProfile.detail) {
-                    Picker("Button Profile", selection: $manager.controllerProfile) {
-                        ForEach(ControllerProfile.allCases) { profile in
-                            Text(profile.title).tag(profile)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 210)
-                    .disabled(!manager.virtualGamepadEnabled)
-                }
-            }
-
-            settingsSection("Sensors") {
-                settingsRow(title: "Motion Right Stick", detail: "Maps the selected motion source to the virtual controller right stick.") {
-                    Toggle("", isOn: $manager.motionRightStickEnabled)
-                        .labelsHidden()
-                        .disabled(!manager.virtualGamepadEnabled)
-                }
-                rowDivider()
-                settingsRow(title: "Motion Input Source", detail: manager.motionInputSource.detail) {
-                    Picker("Motion Input Source", selection: $manager.motionInputSource) {
-                        ForEach(MotionInputSource.allCases) { source in
-                            Text(source.title).tag(source)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 210)
-                    .disabled(!manager.virtualGamepadEnabled || !manager.motionRightStickEnabled)
-                }
-                rowDivider()
-                settingsRow(title: "Read MotionPlus Gyro", detail: "Activates MotionPlus or Wii Remote Plus gyroscope axes for motion input without a sensor bar.") {
-                    Toggle("", isOn: $manager.motionPlusEnabled)
-                        .labelsHidden()
-                }
-                rowDivider()
-                settingsRow(title: "Read IR Points", detail: "Initializes the Wii Remote IR camera. Wii protocol IR report modes also carry accelerometer bytes; virtual motion mapping remains controlled separately.") {
-                    Toggle("", isOn: $manager.irCameraEnabled)
-                        .labelsHidden()
-                }
-            }
-
-            settingsSection("Runtime Environment") {
-                environmentRow(
-                    title: "Virtual HID Entitlement",
-                    value: developerLabEnvironment.entitlementSummary,
-                    symbolName: developerLabEnvironment.virtualHIDEntitlementVisible ? "checkmark.circle.fill" : "lock.circle.fill",
-                    color: developerLabEnvironment.virtualHIDEntitlementVisible ? .green : .secondary
-                )
-                rowDivider()
-                environmentRow(
-                    title: "Signing",
-                    value: developerLabEnvironment.signingSummary,
-                    symbolName: "signature",
-                    color: .secondary
-                )
-                rowDivider()
-                environmentRow(
-                    title: "AMFI Hint",
-                    value: developerLabEnvironment.amfiSummary,
-                    symbolName: developerLabEnvironment.amfiRelaxationHintDetected ? "exclamationmark.triangle.fill" : "shield.fill",
-                    color: developerLabEnvironment.amfiRelaxationHintDetected ? .orange : .secondary
-                )
-            }
-
-            settingsSection("Related Settings") {
-                settingsRow(title: "Accessibility", detail: "Some target apps may request Accessibility permission separately from virtual HID publication.") {
-                    Button("Open") { manager.openAccessibilitySettings() }
-                }
-            }
-        }
-    }
-
     private var bluetoothPage: some View {
-        settingsPage(title: "Bluetooth", subtitle: "Discovery, pairing, and macOS Bluetooth state.") {
-            settingsSection("Status") {
-                settingsRow(title: "Bluetooth", detail: bluetoothDetail) {
-                    Label(manager.phase.title, systemImage: statusSymbol)
-                        .labelStyle(.titleAndIcon)
-                        .foregroundStyle(statusColor)
-                }
-            }
-
+        settingsPage(title: "Bluetooth", subtitle: "Discovery, pairing, and Bluetooth log.") {
             settingsSection("Pairing") {
                 instructionRow(
                     title: "New and Saved Controllers",
-                    message: "For a new Wii Remote, turn on Scan and press the red SYNC button behind the battery cover. For a saved Wii Remote, turn on Scan and press a face button such as 1 or 2; press it again if the remote turns off or the LEDs stop blinking. Connection can take a moment. Cancel macOS Connection Request dialogs from face-button presses until the remote is saved."
+                    message: "For a new Wii Remote, turn on Scan and press the red SYNC button behind the battery cover; if the LEDs stop blinking press a face button such as 1 or 2. For a saved Wii Remote, turn on Scan and press a face button. Connection can take a moment."
                 )
                 rowDivider()
                 HStack(spacing: 8) {
@@ -239,75 +90,41 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
             }
+
+            settingsSection("Status") {
+                settingsRow(title: "Bluetooth", detail: bluetoothDetail) {
+                    Label(manager.phase.title, systemImage: statusSymbol)
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(statusColor)
+                }
+            }
+
+            bluetoothLogSection
         }
     }
 
-    private var diagnosticsPage: some View {
-        settingsPage(title: "Diagnostics", subtitle: "Recent Bluetooth, HID, and virtual-output events.") {
-            settingsSection("DSU / Cemuhook") {
-                settingsRow(title: "Controller UDP Stream", detail: "Publishes controller data for Dolphin, Cemu-compatible clients, and other DSU/Cemuhook consumers on localhost.") {
-                    Toggle("", isOn: $manager.diagnosticsDSUEnabled)
-                        .labelsHidden()
-                }
-                rowDivider()
-                environmentRow(
-                    title: "Endpoint",
-                    value: manager.diagnosticsDSUStatusText,
-                    symbolName: manager.diagnosticsDSUEnabled ? "network" : "network.slash",
-                    color: manager.diagnosticsDSUEnabled ? .blue : .secondary
-                )
-                rowDivider()
-                instructionRow(
-                    title: "Client Setup",
-                    message: "Configure DSU/Cemuhook clients to use UDP 127.0.0.1:26760. Rumble packets are forwarded to the matching Wii Remote slot."
-                )
-            }
-
-            settingsSection("Log") {
-                HStack {
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(manager.diagnostics.plainText, forType: .string)
-                    }
-                    Button("Clear") { manager.diagnostics.clear() }
-                    Spacer()
-                    Text("\(manager.diagnostics.entries.count) entries")
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                rowDivider()
-                diagnosticLog
-            }
-        }
-    }
-
-    private var connectionSection: some View {
-        settingsSection("Connection") {
-            settingsRow(title: "Discovery", detail: bluetoothDetail) {
-                HStack(spacing: 8) {
-                    if manager.isScanning {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    scanToggleButton
-                    Button("Bluetooth Settings") { manager.openBluetoothSettings() }
-                }
+    @ViewBuilder
+    private var activeControllersSection: some View {
+        if manager.wiimotes.isEmpty {
+            emptyControllerSection
+        } else {
+            ForEach(manager.wiimotes) { wiimote in
+                connectedControllerSection(wiimote)
             }
         }
     }
 
     private var emptyControllerSection: some View {
-        settingsSection {
+        settingsSection("Active Controllers") {
             HStack(spacing: 22) {
                 ControllerArtwork(kind: .remote, active: false)
                     .frame(width: 112, height: 180)
                     .padding(.leading, 6)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("No Game Controllers")
+                    Text("No Active Controllers")
                         .font(.title3.weight(.semibold))
-                    Text("Turn on Scan. For a new Wii Remote, press red SYNC behind the battery cover. For a saved Wii Remote, press a face button such as 1 or 2; press it again if the remote turns off or the LEDs stop blinking. Connection can take a moment.")
+                    Text("Turn on Scan. For a new Wii Remote, press red SYNC behind the battery cover. For a saved Wii Remote, press a face button such as 1 or 2.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 8) {
@@ -322,8 +139,46 @@ struct ContentView: View {
         }
     }
 
+    private var controllerListSection: some View {
+        settingsSection("Saved Controllers") {
+            if manager.savedWiimotes.isEmpty {
+                emptyRow(
+                    title: "No saved Wii controllers",
+                    message: "Pair controllers from Bluetooth. Saved Wii Remotes and Wii Fit Balance Boards will appear here with active status.",
+                    systemImage: "gamecontroller"
+                )
+            } else {
+                ForEach(manager.savedWiimotes) { remote in
+                    savedControllerRow(remote)
+                    if remote.id != manager.savedWiimotes.last?.id {
+                        rowDivider()
+                    }
+                }
+            }
+        }
+    }
+
+    private var bluetoothLogSection: some View {
+        settingsSection("Log") {
+            HStack {
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(manager.diagnostics.plainText, forType: .string)
+                }
+                Button("Clear") { manager.diagnostics.clear() }
+                Spacer()
+                Text("\(visibleBluetoothLogEntries.count) recent entries")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            rowDivider()
+            bluetoothLog
+        }
+    }
+
     private func connectedControllerSection(_ wiimote: ConnectedWiimoteSnapshot) -> some View {
-        settingsSection(wiimote.name.isEmpty ? "Wii Remote" : wiimote.name) {
+        settingsSection(wiimote.name.isEmpty ? "Active Controller" : wiimote.name) {
             HStack(alignment: .center, spacing: 22) {
                 connectedControllerArtwork(wiimote)
                     .frame(width: 170, height: 190)
@@ -345,16 +200,7 @@ struct ContentView: View {
                     }
 
                     HStack(spacing: 8) {
-                        Button("Refresh") { manager.requestStatus(id: wiimote.id) }
-                        Button("Identify") {
-                            manager.setRumble(id: wiimote.id, enabled: true)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                                manager.setRumble(id: wiimote.id, enabled: false)
-                            }
-                        }
-                        if manager.motionRightStickEnabled {
-                            Button("Center Motion") { manager.calibrateMotion(id: wiimote.id) }
-                        }
+                        Button("Identify") { identify(wiimote) }
                         Button("Disconnect") { manager.disconnectWiimote(id: wiimote.id) }
                     }
                 }
@@ -362,37 +208,17 @@ struct ContentView: View {
             .padding(16)
 
             rowDivider()
-            controllerMetricRow("Buttons", wiimote.buttons.isEmpty ? "None" : wiimote.buttons.joined(separator: "  "))
+            controllerMetricRow("Hardware", hardwareText(wiimote))
+            rowDivider()
+            controllerMetricRow("Extension", extensionText(wiimote))
+            rowDivider()
+            controllerMetricRow("Buttons Pressed", wiimote.buttons.isEmpty ? "None" : wiimote.buttons.joined(separator: "  "))
             rowDivider()
             controllerMetricRow("Input Rate", "\(wiimote.reportsPerSecond) reports/s")
-            rowDivider()
-            controllerMetricRow("Last Report", wiimote.reportID.map { String(format: "0x%02X", $0) } ?? "None")
             rowDivider()
             controllerMetricRow("Remote Type", wiimote.remoteKind.title)
             rowDivider()
             controllerMetricRow("MotionPlus", wiimote.motionPlusCapability.title)
-            rowDivider()
-            controllerMetricRow("Motion", accelerationText(wiimote.acceleration))
-            rowDivider()
-            controllerMetricRow("Extension Motion", accelerationText(wiimote.extensionAcceleration))
-            rowDivider()
-            controllerMetricRow("Gyroscope", gyroscopeText(wiimote.motionPlusGyroscope))
-            rowDivider()
-            controllerMetricRow("Extension", extensionText(wiimote))
-            rowDivider()
-            controllerMetricRow("IR Points", irPointText(wiimote))
-            rowDivider()
-            controllerMetricRow("Virtual Output", virtualGamepadText(wiimote))
-
-            if let error = wiimote.virtualGamepadError {
-                rowDivider()
-                environmentRow(
-                    title: "Output Error",
-                    value: error,
-                    symbolName: "exclamationmark.triangle.fill",
-                    color: .orange
-                )
-            }
         }
     }
 
@@ -413,33 +239,15 @@ struct ContentView: View {
 
             Spacer()
 
-            Label(remote.isConnected ? "Connected" : "Not Connected", systemImage: remote.isConnected ? "checkmark.circle.fill" : "circle")
+            Label(remote.isConnected ? "Active" : "Saved", systemImage: remote.isConnected ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(remote.isConnected ? .green : .secondary)
 
-            if remote.isConnected {
-                Button("Disconnect") { manager.disconnectSavedWiimote(address: remote.address) }
-            } else {
-                Text(remote.remoteKind == .balanceBoard ? "Scan, then press Power" : "Scan, then press a face button")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
             Button("Forget", role: .destructive) {
                 savedRemotePendingRemoval = remote
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-    }
-
-    @ViewBuilder
-    private func savedControllerArtwork(_ remote: SavedWiimoteSnapshot) -> some View {
-        if remote.remoteKind == .balanceBoard {
-            ControllerArtwork(kind: .balanceBoard, active: remote.isConnected)
-                .frame(width: 54, height: 42)
-        } else {
-            ControllerArtwork(kind: .remote, active: remote.isConnected)
-                .frame(width: 42, height: 68)
-        }
     }
 
     @ViewBuilder
@@ -457,34 +265,12 @@ struct ContentView: View {
         }
     }
 
-    private var savedExtensionRows: [SavedExtensionDisplayRow] {
-        manager.savedWiimotes
-            .flatMap { remote in
-                remote.extensions.map { extensionSnapshot in
-                    SavedExtensionDisplayRow(
-                        id: extensionSnapshot.id,
-                        name: extensionSnapshot.name,
-                        identifierHex: extensionSnapshot.identifierHex,
-                        remoteName: remote.name,
-                        remoteAddress: remote.address,
-                        lastSeen: extensionSnapshot.lastSeen
-                    )
-                }
-            }
-            .sorted {
-                if $0.lastSeen != $1.lastSeen {
-                    return $0.lastSeen > $1.lastSeen
-                }
-                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
-            }
-    }
-
     private func savedExtensionRow(_ extensionRow: SavedExtensionDisplayRow) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "puzzlepiece.extension")
                 .font(.title3)
-                .foregroundStyle(.secondary)
-                .frame(width: 42, height: 42)
+                .foregroundStyle(extensionRow.isConnected ? Color.accentColor : Color.secondary)
+                .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(extensionRow.name)
@@ -492,31 +278,43 @@ struct ContentView: View {
                 Text(extensionRow.identifierHex)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
-                Text("Last seen with \(extensionRow.remoteName) · \(extensionRow.remoteAddress)")
+                Text("Saved with \(extensionRow.remoteName) - \(extensionRow.remoteAddress)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
+
+            if extensionRow.isConnected {
+                Label("Active", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+
+            Button("Forget", role: .destructive) {
+                manager.removeSavedExtension(
+                    remoteAddress: extensionRow.remoteAddress,
+                    identifierHex: extensionRow.identifierHex
+                )
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 
-    private var diagnosticLog: some View {
+    private var bluetoothLog: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(manager.diagnostics.entries.reversed()) { entry in
+                ForEach(visibleBluetoothLogEntries.reversed()) { entry in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Image(systemName: entry.symbolName)
                             .frame(width: 16)
-                            .foregroundStyle(diagnosticColor(for: entry.level))
+                            .foregroundStyle(logColor(for: entry.level))
                         Text(entry.time, format: .dateTime.hour().minute().second())
                             .foregroundStyle(.secondary)
                             .frame(width: 72, alignment: .leading)
                         Text(entry.level)
                             .foregroundStyle(.secondary)
-                            .frame(width: 72, alignment: .leading)
+                            .frame(width: 76, alignment: .leading)
                         Text(entry.message)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -528,7 +326,11 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minHeight: 260, maxHeight: 380)
+        .frame(minHeight: 240, maxHeight: 360)
+    }
+
+    private var visibleBluetoothLogEntries: [DiagnosticLog.Entry] {
+        Array(manager.diagnostics.entries.suffix(80))
     }
 
     private func settingsPage<Content: View>(
@@ -617,24 +419,6 @@ struct ContentView: View {
         .padding(.vertical, 8)
     }
 
-    private func environmentRow(title: String, value: String, symbolName: String, color: Color) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: symbolName)
-                .foregroundStyle(color)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                Text(value)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-    }
-
     private func instructionRow(title: String, message: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "info.circle")
@@ -700,11 +484,38 @@ struct ContentView: View {
             .background(statusColor.opacity(0.10), in: Capsule())
     }
 
+    private var savedExtensionRows: [SavedExtensionDisplayRow] {
+        let activeExtensionIDs = Set(manager.wiimotes.compactMap { wiimote in
+            wiimote.extensionIdentifierHex.map { "\(normalizedBluetoothAddress(wiimote.address ?? "")):\($0)" }
+        })
+
+        return manager.savedWiimotes
+            .flatMap { remote in
+                remote.extensions.map { extensionSnapshot in
+                    let normalizedRemoteAddress = normalizedBluetoothAddress(remote.address)
+                    return SavedExtensionDisplayRow(
+                        id: extensionSnapshot.id,
+                        name: extensionSnapshot.name,
+                        identifierHex: extensionSnapshot.identifierHex,
+                        remoteName: remote.name,
+                        remoteAddress: remote.address,
+                        isConnected: activeExtensionIDs.contains("\(normalizedRemoteAddress):\(extensionSnapshot.identifierHex)"),
+                        lastSeen: extensionSnapshot.lastSeen
+                    )
+                }
+            }
+            .sorted {
+                if $0.isConnected != $1.isConnected { return $0.isConnected }
+                if $0.lastSeen != $1.lastSeen { return $0.lastSeen > $1.lastSeen }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+    }
+
     private var controllerSubtitle: String {
         if manager.wiimotes.isEmpty {
-            return manager.isScanning ? "Searching for new red-SYNC and saved controllers." : "No connected Wii Remote."
+            return manager.savedWiimotes.isEmpty ? "No saved or active controllers." : "Saved controllers and extensions."
         }
-        return "Customize and monitor connected controllers."
+        return "\(manager.wiimotes.count) active controller\(manager.wiimotes.count == 1 ? "" : "s"), saved controllers, and saved extensions."
     }
 
     private var bluetoothDetail: String {
@@ -714,7 +525,7 @@ struct ContentView: View {
         case .permissionDenied:
             return "Allow WiiMacMote in Privacy & Security > Bluetooth."
         case .error:
-            return "Review Diagnostics for the exact Bluetooth or HID result."
+            return "Review the Bluetooth log for the exact Bluetooth or HID result."
         case .scanning:
             return "Listening for red SYNC and saved controller button presses."
         case .pairing, .waitingForHID:
@@ -766,10 +577,6 @@ struct ContentView: View {
         }
     }
 
-    private var developerLabEnvironment: DeveloperLabEnvironmentSnapshot {
-        DeveloperLabEnvironment.snapshot()
-    }
-
     private var savedRemoteRemovalIsPresented: Binding<Bool> {
         Binding(
             get: { savedRemotePendingRemoval != nil },
@@ -779,6 +586,13 @@ struct ContentView: View {
                 }
             }
         )
+    }
+
+    private func identify(_ wiimote: ConnectedWiimoteSnapshot) {
+        manager.setRumble(id: wiimote.id, enabled: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            manager.setRumble(id: wiimote.id, enabled: false)
+        }
     }
 
     private func batteryView(_ percent: Int?) -> some View {
@@ -801,24 +615,14 @@ struct ContentView: View {
         }
     }
 
-    private func accelerationText(_ acceleration: WiimoteAcceleration?) -> String {
-        guard let acceleration else { return "Off" }
-        return String(
-            format: "x %+.2f g   y %+.2f g   z %+.2f g",
-            acceleration.xG,
-            acceleration.yG,
-            acceleration.zG
-        )
-    }
-
-    private func gyroscopeText(_ gyroscope: WiimoteMotionPlusGyroscope?) -> String {
-        guard let gyroscope else { return manager.motionPlusEnabled ? "Waiting for MotionPlus" : "Off" }
-        return String(
-            format: "yaw %+.1f deg/s   roll %+.1f deg/s   pitch %+.1f deg/s",
-            gyroscope.yawDegreesPerSecond,
-            gyroscope.rollDegreesPerSecond,
-            gyroscope.pitchDegreesPerSecond
-        )
+    private func hardwareText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
+        var parts = [wiimote.remoteKind.title]
+        if let address = wiimote.address, !address.isEmpty {
+            parts.append(address)
+        } else {
+            parts.append(String(format: "Product 0x%04X", wiimote.productID))
+        }
+        return parts.joined(separator: " - ")
     }
 
     private func extensionText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
@@ -834,24 +638,6 @@ struct ContentView: View {
             parts.append(String(format: "%.1f kg", kilograms))
         }
         return parts.joined(separator: " - ")
-    }
-
-    private func virtualGamepadText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
-        guard wiimote.virtualGamepadActive else { return "Off" }
-        return [wiimote.virtualGamepadIdentity, wiimote.virtualGamepadBackend]
-            .compactMap { $0 }
-            .joined(separator: " - ")
-    }
-
-    private func irPointText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
-        guard manager.irCameraEnabled else { return "Disabled" }
-        guard !wiimote.irPoints.isEmpty else { return "No visible points" }
-        return wiimote.irPoints.enumerated()
-            .map { index, point in
-                let size = point.size.map { " s\($0)" } ?? ""
-                return "P\(index + 1) \(point.x),\(point.y)\(size)"
-            }
-            .joined(separator: "  ")
     }
 
     private func controllerTypeText(_ wiimote: ConnectedWiimoteSnapshot) -> String {
@@ -872,7 +658,12 @@ struct ContentView: View {
     }
 
     private func savedControllerTypeText(_ remote: SavedWiimoteSnapshot) -> String {
-        remote.remoteKind.title
+        if remote.motionPlusCapability.isKnownPresent,
+           remote.remoteKind != .motionPlusInside,
+           remote.remoteKind != .balanceBoard {
+            return remote.remoteKind.title + " + MotionPlus"
+        }
+        return remote.remoteKind.title
     }
 
     @ViewBuilder
@@ -891,6 +682,17 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private func savedControllerArtwork(_ remote: SavedWiimoteSnapshot) -> some View {
+        if remote.remoteKind == .balanceBoard {
+            ControllerArtwork(kind: .balanceBoard, active: remote.isConnected)
+                .frame(width: 54, height: 42)
+        } else {
+            ControllerArtwork(kind: .remote, active: remote.isConnected)
+                .frame(width: 42, height: 68)
+        }
+    }
+
     private func extensionArtworkKind(for wiimote: ConnectedWiimoteSnapshot) -> ControllerArtwork.Kind? {
         let name = (wiimote.extensionName ?? "").lowercased()
         if name.contains("balance") { return .balanceBoard }
@@ -899,12 +701,21 @@ struct ContentView: View {
         return nil
     }
 
-    private func diagnosticColor(for level: String) -> Color {
+    private func normalizedBluetoothAddress(_ address: String) -> String {
+        address
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ":", with: "-")
+            .lowercased()
+    }
+
+    private func logColor(for level: String) -> Color {
         switch level {
         case "Error": return .red
         case "Warning": return .orange
         case "Success": return .green
-        case "Discovery", "Pairing": return .blue
+        case "Discovery", "Pairing", "Connection": return .blue
+        case "Removal": return .orange
+        case "Extension": return .purple
         default: return .secondary
         }
     }
@@ -912,30 +723,21 @@ struct ContentView: View {
 
 private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case controllers
-    case savedControllers
-    case output
     case bluetooth
-    case diagnostics
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .controllers: return "Game Controllers"
-        case .savedControllers: return "Saved Controllers"
-        case .output: return "Output"
+        case .controllers: return "Controllers"
         case .bluetooth: return "Bluetooth"
-        case .diagnostics: return "Diagnostics"
         }
     }
 
     var systemImage: String {
         switch self {
         case .controllers: return "gamecontroller"
-        case .savedControllers: return "rectangle.stack"
-        case .output: return "display.and.arrow.down"
         case .bluetooth: return "dot.radiowaves.left.and.right"
-        case .diagnostics: return "stethoscope"
         }
     }
 }
@@ -990,6 +792,7 @@ private struct ControllerArtwork: View {
                     .fill(outline.opacity(active ? 0.18 : 0.10))
                     .frame(width: bodyWidth * 0.32, height: bodyHeight * 0.035)
                     .position(x: width / 2, y: height * 0.17)
+
             }
         }
     }
@@ -1060,23 +863,6 @@ private struct ControllerArtwork: View {
                     .position(x: width / 2, y: height * 0.52)
             }
         }
-    }
-}
-
-private struct DPadShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let thirdX = rect.width / 3
-        let thirdY = rect.height / 3
-        var path = Path()
-        path.addRoundedRect(
-            in: CGRect(x: rect.minX + thirdX, y: rect.minY, width: thirdX, height: rect.height),
-            cornerSize: CGSize(width: thirdX * 0.25, height: thirdX * 0.25)
-        )
-        path.addRoundedRect(
-            in: CGRect(x: rect.minX, y: rect.minY + thirdY, width: rect.width, height: thirdY),
-            cornerSize: CGSize(width: thirdY * 0.25, height: thirdY * 0.25)
-        )
-        return path
     }
 }
 

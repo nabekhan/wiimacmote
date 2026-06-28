@@ -12,20 +12,14 @@
 		A10000000000000000000003 /* WiimoteManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* WiimoteManager.swift */; };
 		A10000000000000000000004 /* WiimoteHIDController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* WiimoteHIDController.swift */; };
 		A10000000000000000000005 /* WiimoteProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* WiimoteProtocol.swift */; };
-		A10000000000000000000006 /* GamepadMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* GamepadMapping.swift */; };
-		A10000000000000000000007 /* VirtualGamepad.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* VirtualGamepad.swift */; };
 		A10000000000000000000008 /* WiimotePairingBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* WiimotePairingBridge.m */; };
-		A1000000000000000000000F /* VirtualGamepadReports.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* VirtualGamepadReports.swift */; };
 		A10000000000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* Assets.xcassets */; };
 		A1000000000000000000000A /* IOBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* IOBluetooth.framework */; };
 		A1000000000000000000000C /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* IOKit.framework */; };
 		A1000000000000000000000D /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* AppKit.framework */; };
 		A1000000000000000000000E /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* SwiftUI.framework */; };
-		A10000000000000000000010 /* CoreHID.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* CoreHID.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
-		A10000000000000000000011 /* DeveloperLabEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* DeveloperLabEnvironment.swift */; };
 		A10000000000000000000012 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* Security.framework */; };
 		A10000000000000000000013 /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019 /* CoreBluetooth.framework */; };
-		A10000000000000000000014 /* DiagnosticDSUServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001A /* DiagnosticDSUServer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,26 +28,19 @@
 		A20000000000000000000003 /* WiimoteManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiimoteManager.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* WiimoteHIDController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiimoteHIDController.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* WiimoteProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiimoteProtocol.swift; sourceTree = "<group>"; };
-		A20000000000000000000006 /* GamepadMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GamepadMapping.swift; sourceTree = "<group>"; };
-		A20000000000000000000007 /* VirtualGamepad.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualGamepad.swift; sourceTree = "<group>"; };
 		A20000000000000000000008 /* WiimotePairingBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WiimotePairingBridge.m; sourceTree = "<group>"; };
 		A20000000000000000000009 /* WiimotePairingBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WiimotePairingBridge.h; sourceTree = "<group>"; };
-		A20000000000000000000014 /* VirtualGamepadReports.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualGamepadReports.swift; sourceTree = "<group>"; };
 		A2000000000000000000000A /* WiimoteBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WiimoteBridge.h; sourceTree = "<group>"; };
 		A2000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000000C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000000000000000000000D /* WiiMacMote.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WiiMacMote.entitlements; sourceTree = "<group>"; };
-		A20000000000000000000015 /* WiiMacMote-DeveloperLab.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "WiiMacMote-DeveloperLab.entitlements"; sourceTree = "<group>"; };
 		A2000000000000000000000E /* WiiMacMote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WiiMacMote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000F /* IOBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOBluetooth.framework; path = System/Library/Frameworks/IOBluetooth.framework; sourceTree = SDKROOT; };
 		A20000000000000000000011 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
 		A20000000000000000000012 /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
 		A20000000000000000000013 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
-		A20000000000000000000016 /* CoreHID.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreHID.framework; path = System/Library/Frameworks/CoreHID.framework; sourceTree = SDKROOT; };
-		A20000000000000000000017 /* DeveloperLabEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperLabEnvironment.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		A20000000000000000000019 /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
-		A2000000000000000000001A /* DiagnosticDSUServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticDSUServer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -61,7 +48,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000010 /* CoreHID.framework in Frameworks */,
 				A10000000000000000000013 /* CoreBluetooth.framework in Frameworks */,
 				A10000000000000000000012 /* Security.framework in Frameworks */,
 				A1000000000000000000000E /* SwiftUI.framework in Frameworks */,
@@ -91,18 +77,12 @@
 				A20000000000000000000003 /* WiimoteManager.swift */,
 				A20000000000000000000004 /* WiimoteHIDController.swift */,
 				A20000000000000000000005 /* WiimoteProtocol.swift */,
-				A20000000000000000000006 /* GamepadMapping.swift */,
-				A20000000000000000000007 /* VirtualGamepad.swift */,
 				A20000000000000000000008 /* WiimotePairingBridge.m */,
 				A20000000000000000000009 /* WiimotePairingBridge.h */,
-				A20000000000000000000014 /* VirtualGamepadReports.swift */,
-				A20000000000000000000017 /* DeveloperLabEnvironment.swift */,
-				A2000000000000000000001A /* DiagnosticDSUServer.swift */,
 				A2000000000000000000000A /* WiimoteBridge.h */,
 				A2000000000000000000000C /* Assets.xcassets */,
 				A2000000000000000000000B /* Info.plist */,
 				A2000000000000000000000D /* WiiMacMote.entitlements */,
-				A20000000000000000000015 /* WiiMacMote-DeveloperLab.entitlements */,
 			);
 			path = wiimacmote;
 			sourceTree = "<group>";
@@ -114,7 +94,6 @@
 				A20000000000000000000011 /* IOKit.framework */,
 				A20000000000000000000012 /* AppKit.framework */,
 				A20000000000000000000013 /* SwiftUI.framework */,
-				A20000000000000000000016 /* CoreHID.framework */,
 				A20000000000000000000018 /* Security.framework */,
 				A20000000000000000000019 /* CoreBluetooth.framework */,
 			);
@@ -203,12 +182,7 @@
 				A10000000000000000000003 /* WiimoteManager.swift in Sources */,
 				A10000000000000000000004 /* WiimoteHIDController.swift in Sources */,
 				A10000000000000000000005 /* WiimoteProtocol.swift in Sources */,
-				A10000000000000000000006 /* GamepadMapping.swift in Sources */,
-				A10000000000000000000007 /* VirtualGamepad.swift in Sources */,
 				A10000000000000000000008 /* WiimotePairingBridge.m in Sources */,
-				A1000000000000000000000F /* VirtualGamepadReports.swift in Sources */,
-				A10000000000000000000011 /* DeveloperLabEnvironment.swift in Sources */,
-				A10000000000000000000014 /* DiagnosticDSUServer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -313,57 +287,6 @@
 			};
 			name = Release;
 		};
-		A80000000000000000000005 /* DeveloperLab */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				ARCHS = "$(ARCHS_STANDARD)";
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-				CLANG_WARN_STRICT_PROTOTYPES = YES;
-				CLANG_WARN_SUSPICIOUS_MOVE = YES;
-				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = dwarf;
-				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu17;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_OPTIMIZATION_LEVEL = 0;
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"DEBUG=1",
-					"$(inherited)",
-				);
-				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				GCC_WARN_UNUSED_FUNCTION = YES;
-				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				ONLY_ACTIVE_ARCH = YES;
-				SDKROOT = macosx;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG DEVELOPER_LAB $(inherited)";
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_STRICT_CONCURRENCY = minimal;
-			};
-			name = DeveloperLab;
-		};
 		A80000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -420,36 +343,6 @@
 			};
 			name = Release;
 		};
-		A80000000000000000000006 /* DeveloperLab */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				AD_HOC_CODE_SIGNING_ALLOWED = YES;
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "wiimacmote/WiiMacMote-DeveloperLab.entitlements";
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 205;
-				ENABLE_APP_SANDBOX = NO;
-				ENABLE_HARDENED_RUNTIME = NO;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = wiimacmote/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MARKETING_VERSION = 2.0.5;
-				PRODUCT_BUNDLE_IDENTIFIER = com.nabekhan.WiiMacMote.DeveloperLab;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = macosx;
-				SUPPORTS_MACCATALYST = NO;
-				SWIFT_OBJC_BRIDGING_HEADER = wiimacmote/WiimoteBridge.h;
-				SWIFT_VERSION = 5.0;
-			};
-			name = DeveloperLab;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -458,7 +351,6 @@
 			buildConfigurations = (
 				A80000000000000000000001 /* Debug */,
 				A80000000000000000000002 /* Release */,
-				A80000000000000000000005 /* DeveloperLab */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -468,7 +360,6 @@
 			buildConfigurations = (
 				A80000000000000000000003 /* Debug */,
 				A80000000000000000000004 /* Release */,
-				A80000000000000000000006 /* DeveloperLab */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

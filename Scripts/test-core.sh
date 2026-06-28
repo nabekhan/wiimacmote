@@ -19,10 +19,6 @@ fi
 # shellcheck disable=SC2086
 $SWIFTC \
   "$ROOT/wiimacmote/WiimoteProtocol.swift" \
-  "$ROOT/wiimacmote/GamepadMapping.swift" \
-  "$ROOT/wiimacmote/DiagnosticDSUServer.swift" \
-  "$ROOT/wiimacmote/VirtualGamepadReports.swift" \
-  "$ROOT/wiimacmote/DeveloperLabEnvironment.swift" \
   "$ROOT/Tests/CoreTests.swift" \
   -o "$BUILD_DIR/CoreTests"
 
